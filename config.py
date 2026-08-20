@@ -30,6 +30,18 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
 # Company profile PDF to attach to every outbound email (optional; skipped if missing)
 ATTACHMENT_PATH = Path(os.getenv("ATTACHMENT_PATH", str(BASE_DIR / "AP_ONLINE_JOBS_COMPANY_PROFILE.pdf")))
 
+# Email signature (single source of truth for both the plain-text and HTML
+# versions of every outbound email; the HTML version also embeds the logo
+# image below the contact details).
+SIGNATURE_NAME = os.getenv("SIGNATURE_NAME", "Javed Jabbar").strip()
+SIGNATURE_TITLE = os.getenv("SIGNATURE_TITLE", "Telemarketing Coordinator").strip()
+SIGNATURE_COMPANY = os.getenv("SIGNATURE_COMPANY", "AP ONLINE JOBS SDN BHD").strip()
+SIGNATURE_EMAIL = os.getenv("SIGNATURE_EMAIL", "javed@onlinejobs.my").strip()
+SIGNATURE_PHONE = os.getenv("SIGNATURE_PHONE", "0109086787").strip()
+SIGNATURE_WEBSITE = os.getenv("SIGNATURE_WEBSITE", "https://onlinejobs.my/").strip()
+# Logo image embedded inline in the HTML signature (optional; skipped if missing).
+SIGNATURE_LOGO_PATH = Path(os.getenv("SIGNATURE_LOGO_PATH", str(BASE_DIR / "signature_logo.png")))
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 OPENAI_MINI_MODEL = os.getenv("OPENAI_MINI_MODEL", "gpt-4o-mini")

@@ -14,7 +14,16 @@ from typing import Any, Dict, Optional
 
 from openai import OpenAI
 
-from config import OPENAI_API_KEY, OPENAI_MODEL
+from config import (
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
+    SIGNATURE_COMPANY,
+    SIGNATURE_EMAIL,
+    SIGNATURE_NAME,
+    SIGNATURE_PHONE,
+    SIGNATURE_TITLE,
+    SIGNATURE_WEBSITE,
+)
 from db import get_conn
 
 logger = logging.getLogger(__name__)
@@ -292,8 +301,12 @@ SERVICES_INLINE = (
 
 SIGNATURE = (
     "Kind regards,\n\n"
-    "JAVED JABBAR\n"
-    "AGENSI PEKERJAAN ONLINE JOBS SDN BHD"
+    f"{SIGNATURE_NAME}\n"
+    f"{SIGNATURE_TITLE}\n"
+    f"{SIGNATURE_COMPANY}\n"
+    f"Email: {SIGNATURE_EMAIL}\n"
+    f"Phone: {SIGNATURE_PHONE}\n"
+    f"Website: {SIGNATURE_WEBSITE}"
 )
 
 UNSUBSCRIBE = "Reply 'remove' if this isn't relevant and we won't email you again."

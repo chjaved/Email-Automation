@@ -8,7 +8,17 @@ from typing import Dict, Optional
 
 from openai import OpenAI
 
-from config import OPENAI_API_KEY, OPENAI_MODEL, TIMEZONE
+from config import (
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
+    SIGNATURE_COMPANY,
+    SIGNATURE_EMAIL,
+    SIGNATURE_NAME,
+    SIGNATURE_PHONE,
+    SIGNATURE_TITLE,
+    SIGNATURE_WEBSITE,
+    TIMEZONE,
+)
 from db import get_conn
 
 logger = logging.getLogger(__name__)
@@ -83,8 +93,12 @@ def _call_openai(prompt: str, temperature: float = 0.7) -> str:
 def _signature() -> str:
     return (
         "\n\nKind regards,\n\n"
-        "JAVED JABBAR\n"
-        "AGENSI PEKERJAAN ONLINE JOBS SDN BHD\n\n"
+        f"{SIGNATURE_NAME}\n"
+        f"{SIGNATURE_TITLE}\n"
+        f"{SIGNATURE_COMPANY}\n"
+        f"Email: {SIGNATURE_EMAIL}\n"
+        f"Phone: {SIGNATURE_PHONE}\n"
+        f"Website: {SIGNATURE_WEBSITE}\n\n"
         "---\n"
         "Reply 'remove' if this isn't relevant and we won't email you again."
     )

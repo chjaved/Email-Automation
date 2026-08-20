@@ -5,8 +5,10 @@ different `FROM_ALIAS` address that must be a registered "send-as" alias
 on the same Gmail account.
 """
 import email.utils
+import html as html_lib
 import logging
 import mimetypes
+import re
 import smtplib
 import sqlite3
 import time
@@ -22,6 +24,13 @@ from config import (
     BOUNCE_RATE_WINDOW,
     FOLLOWUP_SCHEDULE,
     SEND_INTERVAL_SECONDS,
+    SIGNATURE_COMPANY,
+    SIGNATURE_EMAIL,
+    SIGNATURE_LOGO_PATH,
+    SIGNATURE_NAME,
+    SIGNATURE_PHONE,
+    SIGNATURE_TITLE,
+    SIGNATURE_WEBSITE,
     SMTP_HOST,
     SMTP_PORT,
     TIMEZONE,
@@ -126,6 +135,63 @@ def _attach_pdf(msg: EmailMessage) -> None:
     )
 
 
+_SIGNATURE_BLOCK_RE = re.compile(r"\n\n(Kind regards,\n\n.*?)(\n\n-+\n.*)?$", re.DOTALL)
+
+
+def _split_signature(body: str) -> tuple:
+    """Split a plain-text email body into (main_text, signature_text, footer_text)."""
+    m = _SIGNATURE_BLOCK_RE.search(body)
+    if not m:
+        return body, "", ""
+    return body[: m.start()], m.group(1) or "", m.group(2) or ""
+
+
+def _paragraphs_html(text: str) -> str:
+    paragraphs = [p for p in text.strip().split("\n\n") if p.strip()]
+    return "".join(
+        "<p style='margin:0 0 14px;'>" + html_lib.escape(p).replace("\n", "<br>") + "</p>"
+        for p in paragraphs
+    )
+
+
+def _signature_html(logo_cid: Optional[str]) -> str:
+    logo_html = (
+        f"<img src='cid:{logo_cid}' alt='{html_lib.escape(SIGNATURE_COMPANY)}' "
+        f"style='max-width:200px;margin-top:10px;display:block;'>"
+        if logo_cid
+        else ""
+    )
+    return (
+        "<p style='margin:0 0 4px;'>Kind regards,</p>"
+        "<p style='margin:0 0 4px;line-height:1.5;'>"
+        f"<strong>{html_lib.escape(SIGNATURE_NAME)}</strong><br>"
+        f"{html_lib.escape(SIGNATURE_TITLE)}<br>"
+        f"{html_lib.escape(SIGNATURE_COMPANY)}<br>"
+        f"Email: <a href='mailto:{SIGNATURE_EMAIL}'>{html_lib.escape(SIGNATURE_EMAIL)}</a><br>"
+        f"Phone: {html_lib.escape(SIGNATURE_PHONE)}<br>"
+        f"Website: <a href='{SIGNATURE_WEBSITE}'>{html_lib.escape(SIGNATURE_WEBSITE)}</a>"
+        "</p>"
+        f"{logo_html}"
+    )
+
+
+def _build_html_body(body: str) -> str:
+    main, signature, footer = _split_signature(body)
+    parts = [_paragraphs_html(main)]
+    if signature:
+        logo_cid = "logo" if SIGNATURE_LOGO_PATH.exists() else None
+        parts.append(_signature_html(logo_cid))
+    footer_text = re.sub(r"^-+\s*", "", footer.strip()) if footer else ""
+    if footer_text:
+        parts.append(
+            f"<p style='margin:18px 0 0;font-size:0.82em;color:#6b7280;'>{html_lib.escape(footer_text)}</p>"
+        )
+    return (
+        "<html><body style=\"font-family:Arial,Helvetica,sans-serif;font-size:14px;"
+        "color:#1f2430;line-height:1.4;\">" + "".join(parts) + "</body></html>"
+    )
+
+
 def _build_message(
     to: str,
     from_addr: str,
@@ -148,6 +214,13 @@ def _build_message(
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = in_reply_to
     msg.set_content(body)
+    msg.add_alternative(_build_html_body(body), subtype="html")
+    if SIGNATURE_LOGO_PATH.exists():
+        html_part = msg.get_payload()[1]
+        ctype, _ = mimetypes.guess_type(str(SIGNATURE_LOGO_PATH))
+        maintype, subtype = (ctype or "image/png").split("/", 1)
+        with open(SIGNATURE_LOGO_PATH, "rb") as f:
+            html_part.add_related(f.read(), maintype=maintype, subtype=subtype, cid="logo")
     _attach_pdf(msg)
     return msg
 
