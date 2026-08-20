@@ -274,6 +274,87 @@ def api_companies(
     }
 
 
+@app.get("/api/industries")
+def api_industries():
+    """Distinct industries actually present in the leads table (for filter dropdowns)."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT DISTINCT industry FROM leads WHERE industry IS NOT NULL AND industry != '' ORDER BY industry"
+    )
+    rows = [r["industry"] for r in cur.fetchall()]
+    conn.close()
+    return {"industries": rows}
+
+
+class DeleteIds(BaseModel):
+    ids: List[int]
+
+
+@app.delete("/api/companies/{lead_id}")
+def api_delete_company(lead_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM events WHERE lead_id = ?", (lead_id,))
+    cur.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return {"ok": True, "deleted": deleted}
+
+
+@app.post("/api/companies/delete-bulk")
+def api_delete_companies_bulk(body: DeleteIds):
+    if not body.ids:
+        return {"ok": True, "deleted": 0}
+    conn = get_conn()
+    cur = conn.cursor()
+    placeholders = ", ".join(["?"] * len(body.ids))
+    cur.execute(f"DELETE FROM events WHERE lead_id IN ({placeholders})", body.ids)
+    cur.execute(f"DELETE FROM leads WHERE id IN ({placeholders})", body.ids)
+    deleted = cur.rowcount
+    conn.commit()
+    conn.close()
+    return {"ok": True, "deleted": deleted}
+
+
+@app.post("/api/companies/delete-all")
+def api_delete_companies_all(
+    search: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    industry: Optional[str] = Query(None),
+):
+    """Delete ALL companies, optionally scoped to the current search/status/industry filter."""
+    conn = get_conn()
+    cur = conn.cursor()
+
+    where: List[str] = []
+    params: List[Any] = []
+    if search:
+        where.append("(company_name LIKE ? OR email LIKE ?)")
+        like = f"%{search}%"
+        params.extend([like, like])
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    if industry:
+        where.append("industry = ?")
+        params.append(industry.lower())
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+
+    cur.execute(f"SELECT id FROM leads {where_sql}", params)
+    ids = [r["id"] for r in cur.fetchall()]
+    if ids:
+        placeholders = ", ".join(["?"] * len(ids))
+        cur.execute(f"DELETE FROM events WHERE lead_id IN ({placeholders})", ids)
+        cur.execute(f"DELETE FROM leads WHERE id IN ({placeholders})", ids)
+    conn.commit()
+    conn.close()
+    return {"ok": True, "deleted": len(ids)}
+
+
 @app.get("/api/followups")
 def api_followups():
     """Leads awaiting their next follow-up, with the computed due date."""
@@ -422,7 +503,11 @@ async def api_import_csv(file: UploadFile = File(...)):
     imported, updated, skipped = 0, 0, 0
     for row in rows:
         company = (row.get("Company Name") or row.get("company_name") or row.get("Company") or "").strip()
-        industry = (row.get("Industry") or row.get("industry") or "").strip() or "other"
+        industry = (
+            row.get("Industry") or row.get("industry")
+            or row.get("Category") or row.get("category")
+            or ""
+        ).strip() or "other"
 
         emails = pick_emails(row)
         if not emails:
@@ -639,7 +724,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </p>
       <div class="col-list">
         <span class="col-chip">Company Name</span>
-        <span class="col-chip">Industry</span>
+        <span class="col-chip">Industry / Category</span>
         <span class="col-chip">HR Email</span>
         <span class="col-chip">Recruitment Email</span>
         <span class="col-chip">General Company Email</span>
@@ -655,7 +740,7 @@ INDEX_HTML = """<!DOCTYPE html>
     </div>
     <div class="section">
       <div class="toolbar">
-        <input type="text" id="companySearch" placeholder="Search company or email..." style="min-width:260px" />
+        <input type="text" id="companySearch" placeholder="Search company or email..." style="min-width:260px" onkeyup="if(event.key==='Enter') loadCompanies(1)" />
         <select id="companyStatus">
           <option value="">All statuses</option>
           <option value="new">new</option>
@@ -669,12 +754,16 @@ INDEX_HTML = """<!DOCTYPE html>
         </select>
         <select id="companyIndustry"><option value="">All industries</option></select>
         <button class="btn secondary" onclick="loadCompanies(1)">Search</button>
+        <span style="flex:1"></span>
+        <button class="btn small danger" id="deleteSelectedBtn" onclick="deleteSelectedCompanies()" disabled>Delete selected (<span id="selectedCount">0</span>)</button>
+        <button class="btn small danger" onclick="deleteAllCompanies()">Delete ALL matching filter</button>
       </div>
       <table>
         <thead>
           <tr>
+            <th><input type="checkbox" id="selectAllCompanies" onchange="toggleSelectAllCompanies(this)" /></th>
             <th>Company</th><th>Email</th><th>Industry</th><th>Status</th><th>Sequence</th>
-            <th>Last Contact</th><th>Scheduled</th><th></th>
+            <th>Last Contact</th><th>Scheduled</th><th></th><th></th>
           </tr>
         </thead>
         <tbody id="companiesTable"></tbody>
@@ -838,6 +927,7 @@ INDEX_HTML = """<!DOCTYPE html>
         if (!res.ok) throw new Error(data.detail || 'Upload failed');
         showToast(`Imported ${data.imported} new, updated ${data.updated}, skipped ${data.skipped}`, true);
         loadCompanies(1);
+        loadIndustries();
       } catch (e) {
         showToast(e.message, false);
       } finally {
@@ -845,8 +935,7 @@ INDEX_HTML = """<!DOCTYPE html>
       }
     }
 
-    async function loadCompanies(page) {
-      companyPageNum = page || companyPageNum;
+    function companyFilterParams() {
       const params = new URLSearchParams();
       const search = document.getElementById('companySearch').value.trim();
       const status = document.getElementById('companyStatus').value;
@@ -854,6 +943,12 @@ INDEX_HTML = """<!DOCTYPE html>
       if (search) params.set('search', search);
       if (status) params.set('status', status);
       if (industry) params.set('industry', industry);
+      return params;
+    }
+
+    async function loadCompanies(page) {
+      companyPageNum = page || companyPageNum;
+      const params = companyFilterParams();
       params.set('page', companyPageNum);
       params.set('page_size', companyPageSize);
 
@@ -864,6 +959,7 @@ INDEX_HTML = """<!DOCTYPE html>
       document.getElementById('companiesTable').innerHTML = d.rows.map(r => {
         const canSend = !['replied', 'bounced', 'unsubscribed'].includes(r.status);
         return `<tr>
+          <td><input type="checkbox" class="companyRowCheck" value="${r.id}" onchange="updateSelectedCount()" /></td>
           <td>${r.company_name || ''}</td>
           <td>${r.email || ''}</td>
           <td>${r.industry || ''}</td>
@@ -872,18 +968,87 @@ INDEX_HTML = """<!DOCTYPE html>
           <td>${r.last_contact_at ? r.last_contact_at.substring(0,16) : ''}</td>
           <td>${r.scheduled_at ? r.scheduled_at.substring(0,16) : ''}</td>
           <td>${canSend ? `<button class="btn small" onclick="sendNow(${r.id}, this)">Send now</button>` : ''}</td>
+          <td><button class="btn small danger" onclick="deleteCompany(${r.id}, this)">Delete</button></td>
         </tr>`;
       }).join('');
 
       const totalPages = Math.max(1, Math.ceil(companyTotal / companyPageSize));
       document.getElementById('companyPageInfo').textContent =
         `Page ${companyPageNum} of ${totalPages} (${companyTotal} total)`;
+
+      document.getElementById('selectAllCompanies').checked = false;
+      updateSelectedCount();
     }
 
     function companyPage(delta) {
       const totalPages = Math.max(1, Math.ceil(companyTotal / companyPageSize));
       const next = Math.min(totalPages, Math.max(1, companyPageNum + delta));
       loadCompanies(next);
+    }
+
+    function toggleSelectAllCompanies(checkbox) {
+      document.querySelectorAll('.companyRowCheck').forEach(c => c.checked = checkbox.checked);
+      updateSelectedCount();
+    }
+
+    function updateSelectedCount() {
+      const checked = document.querySelectorAll('.companyRowCheck:checked');
+      document.getElementById('selectedCount').textContent = checked.length;
+      document.getElementById('deleteSelectedBtn').disabled = checked.length === 0;
+    }
+
+    async function deleteCompany(id, btn) {
+      if (!confirm('Delete this company? This cannot be undone.')) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/companies/' + id, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Delete failed');
+        showToast('Company deleted', true);
+        loadCompanies(companyPageNum);
+      } catch (e) {
+        showToast(e.message, false);
+        btn.disabled = false;
+      }
+    }
+
+    async function deleteSelectedCompanies() {
+      const ids = Array.from(document.querySelectorAll('.companyRowCheck:checked')).map(c => Number(c.value));
+      if (!ids.length) return;
+      if (!confirm(`Delete ${ids.length} selected companies? This cannot be undone.`)) return;
+      try {
+        const res = await fetch('/api/companies/delete-bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Delete failed');
+        showToast(`Deleted ${data.deleted} companies`, true);
+        loadCompanies(1);
+        loadIndustries();
+      } catch (e) {
+        showToast(e.message, false);
+      }
+    }
+
+    async function deleteAllCompanies() {
+      const params = companyFilterParams();
+      const hasFilter = params.toString().length > 0;
+      const msg = hasFilter
+        ? `Delete ALL companies matching the current search/status/industry filter (${companyTotal} total)? This cannot be undone.`
+        : `Delete ALL ${companyTotal} companies in the database? This cannot be undone.`;
+      if (!confirm(msg)) return;
+      try {
+        const res = await fetch('/api/companies/delete-all?' + params.toString(), { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Delete failed');
+        showToast(`Deleted ${data.deleted} companies`, true);
+        loadCompanies(1);
+        loadIndustries();
+      } catch (e) {
+        showToast(e.message, false);
+      }
     }
 
     async function loadFollowups() {
@@ -1009,21 +1174,20 @@ INDEX_HTML = """<!DOCTYPE html>
     }
 
     async function loadIndustries() {
-      const res = await fetch('/api/data');
+      const res = await fetch('/api/industries');
       const d = await res.json();
-      const seen = new Set();
-      d.industry_replies.forEach(x => seen.add(x.industry));
-      d.activity.forEach(a => a.industry && seen.add(a.industry));
-      d.replies.forEach(r => r.industry && seen.add(r.industry));
-      const sorted = Array.from(seen).sort();
+      const sorted = (d.industries || []).slice().sort();
       ['industry', 'companyIndustry'].forEach(id => {
         const select = document.getElementById(id);
+        const current = select.value;
+        while (select.options.length > 1) select.remove(1);
         sorted.forEach(ind => {
           const opt = document.createElement('option');
           opt.value = ind;
           opt.textContent = ind;
           select.appendChild(opt);
         });
+        select.value = current;
       });
     }
 
