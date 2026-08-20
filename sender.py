@@ -22,6 +22,7 @@ from config import (
     ATTACHMENT_PATH,
     BOUNCE_PAUSE_THRESHOLD,
     BOUNCE_RATE_WINDOW,
+    DEFAULT_CC_EMAILS,
     FOLLOWUP_SCHEDULE,
     SEND_INTERVAL_SECONDS,
     SIGNATURE_COMPANY,
@@ -257,10 +258,10 @@ def send_message(
             subject = f"Re: {subject}"
         body = get_followup_body(lead, step)
 
-    msg = _build_message(to, from_email, subject, body, in_reply_to=in_reply_to)
+    msg = _build_message(to, from_email, subject, body, in_reply_to=in_reply_to, cc=DEFAULT_CC_EMAILS)
 
     try:
-        session.send(from_addr=from_email, to_addrs=[to], msg=msg)
+        session.send(from_addr=from_email, to_addrs=[to] + DEFAULT_CC_EMAILS, msg=msg)
     except Exception as e:
         logger.error("Failed to send to %s: %s", to, e)
         raise

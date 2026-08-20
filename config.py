@@ -18,7 +18,7 @@ GMAIL_TOKEN = BASE_DIR / "token.json"
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Kuala_Lumpur")
 DAILY_CAP = int(os.getenv("DAILY_CAP", "20"))
 FROM_ALIAS = os.getenv("FROM_ALIAS", "").strip()
-FROM_DISPLAY_NAME = os.getenv("FROM_DISPLAY_NAME", "JAVED JABBAR").strip()
+FROM_DISPLAY_NAME = os.getenv("FROM_DISPLAY_NAME", "Javed Jabbar").strip()
 MIN_GAP_SECONDS = int(os.getenv("MIN_GAP_SECONDS", "90"))
 
 # SMTP (Gmail) settings
@@ -41,6 +41,13 @@ SIGNATURE_PHONE = os.getenv("SIGNATURE_PHONE", "0109086787").strip()
 SIGNATURE_WEBSITE = os.getenv("SIGNATURE_WEBSITE", "https://onlinejobs.my/").strip()
 # Logo image embedded inline in the HTML signature (optional; skipped if missing).
 SIGNATURE_LOGO_PATH = Path(os.getenv("SIGNATURE_LOGO_PATH", str(BASE_DIR / "signature_logo.png")))
+
+# CC'd on every outbound email (initial + follow-ups + manual "Send now").
+DEFAULT_CC_EMAILS = [
+    e.strip()
+    for e in os.getenv("DEFAULT_CC_EMAILS", "vasu@onlinejobs.my,seelan@onlinejobs.my").split(",")
+    if e.strip()
+]
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
