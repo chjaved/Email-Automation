@@ -353,9 +353,57 @@ def api_send_now(lead_id: int):
     return {"ok": True, "result": result}
 
 
+def _rows_from_excel(raw: bytes) -> List[Dict[str, str]]:
+    """Parse the first sheet of an .xlsx/.xls file into a list of dict rows,
+    using the first non-empty row as the header (same shape as csv.DictReader)."""
+    import openpyxl
+
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Could not read this Excel file. Legacy .xls files aren't supported - "
+                "please re-save as .xlsx or .csv. "
+                f"({e})"
+            ),
+        )
+    ws = wb.active
+    rows_iter = ws.iter_rows(values_only=True)
+    header = None
+    for r in rows_iter:
+        if any(c is not None and str(c).strip() for c in r):
+            header = [str(c).strip() if c is not None else "" for c in r]
+            break
+    if not header:
+        raise HTTPException(status_code=400, detail="Excel sheet has no header row")
+
+    out = []
+    for r in rows_iter:
+        if all(c is None or str(c).strip() == "" for c in r):
+            continue
+        row = {}
+        for i, col_name in enumerate(header):
+            if not col_name:
+                continue
+            val = r[i] if i < len(r) else None
+            row[col_name] = "" if val is None else str(val).strip()
+        out.append(row)
+    return out
+
+
+def _rows_from_csv_text(text: str) -> List[Dict[str, str]]:
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV has no header row")
+    return list(reader)
+
+
 @app.post("/api/import-csv")
 async def api_import_csv(file: UploadFile = File(...)):
-    """Upload a CSV of companies and upsert them into the DB (status='new').
+    """Upload a CSV or Excel (.xlsx) file of companies and upsert them into
+    the DB (status='new').
 
     Recognised columns (best match wins, case-insensitive):
       Company Name, Industry, HR Email, Recruitment Email, General Company Email
@@ -363,14 +411,16 @@ async def api_import_csv(file: UploadFile = File(...)):
     """
     init_db()
     raw = await file.read()
-    text = raw.decode("utf-8-sig", errors="ignore")
-    reader = csv.DictReader(io.StringIO(text))
+    filename = (file.filename or "").lower()
 
-    if not reader.fieldnames:
-        raise HTTPException(status_code=400, detail="CSV has no header row")
+    if filename.endswith(".xlsx") or filename.endswith(".xls"):
+        rows = _rows_from_excel(raw)
+    else:
+        text = raw.decode("utf-8-sig", errors="ignore")
+        rows = _rows_from_csv_text(text)
 
     imported, updated, skipped = 0, 0, 0
-    for row in reader:
+    for row in rows:
         company = (row.get("Company Name") or row.get("company_name") or row.get("Company") or "").strip()
         industry = (row.get("Industry") or row.get("industry") or "").strip() or "other"
 
@@ -581,9 +631,11 @@ INDEX_HTML = """<!DOCTYPE html>
   <!-- ===================== COMPANIES ===================== -->
   <div class="tab-panel" id="panel-companies">
     <div class="section">
-      <h3>Upload companies (CSV)</h3>
+      <h3>Upload companies (CSV or Excel)</h3>
       <p class="hint">
-        Your CSV needs a company name column and at least one email column. Recognised column names (case-insensitive):
+        Accepts <code>.csv</code>, <code>.xlsx</code>, or <code>.xls</code> &mdash; Excel files are converted internally so
+        both formats work the same way. Your file needs a company name column and at least one email column. Recognised
+        column names (case-insensitive):
       </p>
       <div class="col-list">
         <span class="col-chip">Company Name</span>
@@ -598,8 +650,8 @@ INDEX_HTML = """<!DOCTYPE html>
         already in the system are updated in place, not duplicated. Uploaded companies appear below with status
         <code>new</code> and a <strong>Send now</strong> button.
       </p>
-      <input type="file" id="csvFile" accept=".csv" style="display:none" onchange="uploadCsv()" />
-      <button class="btn" onclick="document.getElementById('csvFile').click()">Choose CSV &amp; Upload</button>
+      <input type="file" id="csvFile" accept=".csv,.xlsx,.xls" style="display:none" onchange="uploadCsv()" />
+      <button class="btn" onclick="document.getElementById('csvFile').click()">Choose File &amp; Upload</button>
     </div>
     <div class="section">
       <div class="toolbar">
