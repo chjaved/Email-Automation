@@ -21,16 +21,13 @@ from config import (
     BOUNCE_PAUSE_THRESHOLD,
     BOUNCE_RATE_WINDOW,
     FOLLOWUP_SCHEDULE,
-    FROM_ALIAS,
-    FROM_DISPLAY_NAME,
     SEND_INTERVAL_SECONDS,
     SMTP_HOST,
-    SMTP_PASSWORD,
     SMTP_PORT,
-    SMTP_USER,
     TIMEZONE,
 )
 from db import get_conn, log_event
+from settings import get_from_alias, get_from_display_name, get_smtp_password, get_smtp_user
 from followups import get_followup_body, is_final
 from generator import generate_for_lead
 from leads import add_do_not_email, is_do_not_email
@@ -56,14 +53,14 @@ class SMTPSession:
     """Thin wrapper around smtplib for a single SMTP session."""
 
     def __init__(self) -> None:
-        if not SMTP_USER or not SMTP_PASSWORD:
+        self.user = get_smtp_user()
+        self.password = get_smtp_password()
+        if not self.user or not self.password:
             raise RuntimeError(
-                "SMTP_USER / SMTP_PASSWORD not configured. Set them in .env."
+                "SMTP_USER / SMTP_PASSWORD not configured. Set them in .env or the dashboard's Settings tab."
             )
         self.host = SMTP_HOST
         self.port = SMTP_PORT
-        self.user = SMTP_USER
-        self.password = SMTP_PASSWORD
         self._smtp: Optional[smtplib.SMTP] = None
 
     def __enter__(self) -> "SMTPSession":
@@ -89,7 +86,7 @@ class SMTPSession:
 
 def get_from_address() -> str:
     """Return the address to use as the visible `From:` header."""
-    return (FROM_ALIAS or SMTP_USER).strip()
+    return (get_from_alias() or get_smtp_user()).strip()
 
 
 def verify_sender() -> str:
@@ -97,13 +94,13 @@ def verify_sender() -> str:
     from_addr = get_from_address()
     if not from_addr:
         raise RuntimeError("No FROM_ALIAS or SMTP_USER configured")
-    if not SMTP_USER or not SMTP_PASSWORD:
+    if not get_smtp_user() or not get_smtp_password():
         raise RuntimeError(
-            "SMTP_USER / SMTP_PASSWORD missing. Set them in .env before running."
+            "SMTP_USER / SMTP_PASSWORD missing. Set them in .env or the dashboard's Settings tab."
         )
     with SMTPSession():
         pass
-    logger.info("SMTP login OK for %s; sending as %s", SMTP_USER, from_addr)
+    logger.info("SMTP login OK for %s; sending as %s", get_smtp_user(), from_addr)
     return from_addr
 
 
@@ -138,7 +135,7 @@ def _build_message(
     cc: Optional[List[str]] = None,
 ) -> EmailMessage:
     msg = EmailMessage()
-    display = FROM_DISPLAY_NAME or "AP Online Jobs"
+    display = get_from_display_name() or "AP Online Jobs"
     msg["From"] = email.utils.formataddr((display, from_addr))
     msg["To"] = to
     if cc:
@@ -297,7 +294,7 @@ def _fetch_recent_inbox_messages(days: int = 7) -> List[Dict[str, Any]]:
 
     try:
         imap = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
-        imap.login(SMTP_USER, SMTP_PASSWORD)
+        imap.login(get_smtp_user(), get_smtp_password())
         imap.select("INBOX", readonly=True)
         since_date = (datetime.now() - _timedelta(days=days)).strftime("%d-%b-%Y")
         typ, data = imap.search(None, f'(SINCE "{since_date}")')
@@ -370,7 +367,7 @@ def detect_bounces_and_replies(from_email: str) -> None:
                 r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", m["body"]
             )
             for addr in found:
-                if addr.lower() == from_email_lower or addr.lower() == SMTP_USER.lower():
+                if addr.lower() == from_email_lower or addr.lower() == get_smtp_user().lower():
                     continue
                 lead_id = sent_leads.get(addr.lower())
                 if lead_id:

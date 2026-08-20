@@ -10,10 +10,12 @@ import uvicorn
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from config import DASHBOARD_HOST, DASHBOARD_PORT, DB_PATH, FOLLOWUP_SCHEDULE, TIMEZONE
 from db import get_conn, init_db
 from send_batch import pick_emails
+from settings import get_public_settings, update_settings
 
 app = FastAPI(title="Campaign Engine Dashboard")
 app.add_middleware(
@@ -405,6 +407,29 @@ async def api_import_csv(file: UploadFile = File(...)):
     return {"ok": True, "imported": imported, "updated": updated, "skipped": skipped}
 
 
+class SettingsUpdate(BaseModel):
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
+    from_alias: Optional[str] = None
+    from_display_name: Optional[str] = None
+
+
+@app.get("/api/settings")
+def api_get_settings():
+    return get_public_settings()
+
+
+@app.post("/api/settings")
+def api_update_settings(body: SettingsUpdate):
+    update_settings(
+        smtp_user=body.smtp_user,
+        smtp_password=body.smtp_password,
+        from_alias=body.from_alias,
+        from_display_name=body.from_display_name,
+    )
+    return {"ok": True, "settings": get_public_settings()}
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return HTMLResponse(INDEX_HTML)
@@ -418,58 +443,90 @@ INDEX_HTML = """<!DOCTYPE html>
 <title>Campaign Engine Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
+  :root {
+    --bg: #f4f6fb;
+    --surface: #ffffff;
+    --border: #e6e9f0;
+    --text: #1f2430;
+    --muted: #6b7280;
+    --primary: #4f46e5;
+    --primary-dark: #4338ca;
+    --accent: #06b6d4;
+    --green: #16a34a;
+    --red: #dc2626;
+    --amber: #d97706;
+    --radius: 12px;
+  }
   * { box-sizing: border-box; }
-  body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f6fa; color: #333; }
-  h1 { margin: 0 0 15px; }
-  .filters { margin-bottom: 15px; }
-  .filters select, .filters input { padding: 6px; margin-right: 8px; }
-  .banner { padding: 12px 16px; border-radius: 6px; margin-bottom: 20px; font-weight: bold; }
-  .banner.green { background: #d4edda; color: #155724; }
-  .banner.red { background: #f8d7da; color: #721c24; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
-  .card { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); text-align: center; }
-  .card .value { font-size: 1.8em; font-weight: bold; color: #2c3e50; }
-  .card .label { font-size: 0.85em; color: #777; margin-top: 4px; }
-  .section { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif;
+    margin: 0; padding: 24px; background: var(--bg); color: var(--text);
+  }
+  h1 { margin: 0 0 4px; font-size: 1.6em; font-weight: 700; letter-spacing: -0.02em; }
+  h1 .sub { display: block; font-size: 0.5em; font-weight: 500; color: var(--muted); margin-top: 4px; letter-spacing: 0; }
+  h3 { margin: 0 0 12px; font-size: 1.02em; font-weight: 600; }
+  .filters { margin-bottom: 15px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .filters select, .filters input { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 0.9em; }
+  .banner { padding: 12px 16px; border-radius: var(--radius); margin-bottom: 20px; font-weight: 600; border: 1px solid transparent; }
+  .banner.green { background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
+  .banner.red { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .card { background: var(--surface); padding: 18px; border-radius: var(--radius); box-shadow: 0 1px 2px rgba(16,24,40,0.05); border: 1px solid var(--border); text-align: center; transition: transform 0.15s; }
+  .card .value { font-size: 1.9em; font-weight: 700; color: var(--text); }
+  .card .label { font-size: 0.82em; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .section { background: var(--surface); padding: 20px; border-radius: var(--radius); box-shadow: 0 1px 2px rgba(16,24,40,0.05); border: 1px solid var(--border); margin-bottom: 20px; }
   .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
-  th, td { padding: 8px; text-align: left; border-bottom: 1px solid #eee; }
-  th { color: #666; }
-  .btn { padding: 6px 10px; background: #28a745; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
-  .btn:disabled { background: #aaa; cursor: default; }
-  .btn.secondary { background: #3498db; }
-  .btn.small { padding: 4px 8px; font-size: 0.85em; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88em; }
+  th, td { padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 0.82em; text-transform: uppercase; letter-spacing: 0.03em; }
+  tr:hover td { background: #fafbff; }
+  .btn { padding: 8px 14px; background: var(--primary); color: #fff; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 0.88em; transition: background 0.15s; }
+  .btn:hover { background: var(--primary-dark); }
+  .btn:disabled { background: #c7c9d1; cursor: default; }
+  .btn.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+  .btn.secondary:hover { background: #f3f4f8; }
+  .btn.small { padding: 5px 10px; font-size: 0.82em; }
+  .btn.danger { background: var(--red); }
   .snippet { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 2px solid #e1e4e8; }
-  .tab-btn { padding: 10px 18px; background: none; border: none; cursor: pointer; font-size: 0.95em; color: #666; border-bottom: 3px solid transparent; margin-bottom: -2px; }
-  .tab-btn.active { color: #2c3e50; font-weight: bold; border-bottom-color: #3498db; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+  .tab-btn { padding: 10px 18px; background: none; border: none; cursor: pointer; font-size: 0.92em; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tab-btn.active { color: var(--primary); font-weight: 700; border-bottom-color: var(--primary); }
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.78em; font-weight: bold; }
-  .badge.new, .badge.enriched { background: #e3f2fd; color: #1565c0; }
-  .badge.scheduled { background: #fff3cd; color: #856404; }
-  .badge.sent { background: #d1ecf1; color: #0c5460; }
-  .badge.completed { background: #d4edda; color: #155724; }
-  .badge.replied { background: #d4edda; color: #155724; }
-  .badge.bounced, .badge.unsubscribed { background: #f8d7da; color: #721c24; }
-  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-  .toolbar input, .toolbar select { padding: 6px; }
-  .pager { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
-  .toast { position: fixed; top: 16px; right: 16px; padding: 12px 18px; border-radius: 6px; color: #fff; font-weight: bold; z-index: 999; opacity: 0; transition: opacity 0.3s; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.76em; font-weight: 700; }
+  .badge.new, .badge.enriched { background: #e0e7ff; color: #4338ca; }
+  .badge.scheduled { background: #fef3c7; color: #92400e; }
+  .badge.sent { background: #cffafe; color: #0e7490; }
+  .badge.completed { background: #dcfce7; color: #166534; }
+  .badge.replied { background: #dcfce7; color: #166534; }
+  .badge.bounced, .badge.unsubscribed, .badge.enrichment_failed { background: #fee2e2; color: #991b1b; }
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  .toolbar input, .toolbar select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fafbfc; font-size: 0.88em; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .toast { position: fixed; top: 16px; right: 16px; padding: 12px 18px; border-radius: 8px; color: #fff; font-weight: 600; z-index: 999; opacity: 0; transition: opacity 0.3s; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
   .toast.show { opacity: 1; }
-  .toast.ok { background: #28a745; }
-  .toast.err { background: #dc3545; }
+  .toast.ok { background: var(--green); }
+  .toast.err { background: var(--red); }
+  .hint { color: var(--muted); font-size: 0.85em; margin: 4px 0 12px; line-height: 1.5; }
+  .hint code { background: #f1f2f7; padding: 1px 5px; border-radius: 4px; font-size: 0.95em; }
+  .col-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
+  .col-chip { background: #eef2ff; color: #4338ca; padding: 3px 10px; border-radius: 6px; font-size: 0.8em; font-weight: 600; }
+  .form-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; max-width: 420px; }
+  .form-row label { font-size: 0.85em; font-weight: 600; color: var(--text); }
+  .form-row input { padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.92em; }
+  .form-row .desc { font-size: 0.8em; color: var(--muted); }
   @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
-  <h1>Campaign Engine Dashboard</h1>
+  <h1>Campaign Engine<span class="sub">Outreach automation dashboard</span></h1>
 
   <div class="tabs">
     <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
     <button class="tab-btn" data-tab="companies" onclick="switchTab('companies')">Companies</button>
     <button class="tab-btn" data-tab="followups" onclick="switchTab('followups')">Follow-ups</button>
     <button class="tab-btn" data-tab="replies" onclick="switchTab('replies')">Replies</button>
+    <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">Settings</button>
   </div>
 
   <div id="toast" class="toast"></div>
@@ -524,6 +581,27 @@ INDEX_HTML = """<!DOCTYPE html>
   <!-- ===================== COMPANIES ===================== -->
   <div class="tab-panel" id="panel-companies">
     <div class="section">
+      <h3>Upload companies (CSV)</h3>
+      <p class="hint">
+        Your CSV needs a company name column and at least one email column. Recognised column names (case-insensitive):
+      </p>
+      <div class="col-list">
+        <span class="col-chip">Company Name</span>
+        <span class="col-chip">Industry</span>
+        <span class="col-chip">HR Email</span>
+        <span class="col-chip">Recruitment Email</span>
+        <span class="col-chip">General Company Email</span>
+        <span class="col-chip">Email</span>
+      </div>
+      <p class="hint">
+        Only <code>Company Name</code> + one valid email are required &mdash; everything else is optional. Rows with an email
+        already in the system are updated in place, not duplicated. Uploaded companies appear below with status
+        <code>new</code> and a <strong>Send now</strong> button.
+      </p>
+      <input type="file" id="csvFile" accept=".csv" style="display:none" onchange="uploadCsv()" />
+      <button class="btn" onclick="document.getElementById('csvFile').click()">Choose CSV &amp; Upload</button>
+    </div>
+    <div class="section">
       <div class="toolbar">
         <input type="text" id="companySearch" placeholder="Search company or email..." style="min-width:260px" />
         <select id="companyStatus">
@@ -539,9 +617,6 @@ INDEX_HTML = """<!DOCTYPE html>
         </select>
         <select id="companyIndustry"><option value="">All industries</option></select>
         <button class="btn secondary" onclick="loadCompanies(1)">Search</button>
-        <span style="flex:1"></span>
-        <input type="file" id="csvFile" accept=".csv" style="display:none" onchange="uploadCsv()" />
-        <button class="btn" onclick="document.getElementById('csvFile').click()">Upload CSV</button>
       </div>
       <table>
         <thead>
@@ -589,6 +664,39 @@ INDEX_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- ===================== SETTINGS ===================== -->
+  <div class="tab-panel" id="panel-settings">
+    <div class="section">
+      <h3>Sender identity</h3>
+      <p class="hint">
+        Controls which Gmail account authenticates the SMTP connection, and which address/name recipients see as the
+        sender. Changing these takes effect immediately &mdash; no redeploy needed. Leave the password field blank to
+        keep the currently configured password.
+      </p>
+      <div class="form-row">
+        <label for="setSmtpUser">SMTP login email (Gmail account)</label>
+        <input type="email" id="setSmtpUser" placeholder="you@gmail.com" />
+        <span class="desc">The Gmail account that authenticates with Google's SMTP server.</span>
+      </div>
+      <div class="form-row">
+        <label for="setSmtpPassword">Gmail App Password</label>
+        <input type="password" id="setSmtpPassword" placeholder="Leave blank to keep current password" autocomplete="new-password" />
+        <span class="desc" id="smtpPasswordStatus">Not set</span>
+      </div>
+      <div class="form-row">
+        <label for="setFromAlias">Send-from address (alias)</label>
+        <input type="email" id="setFromAlias" placeholder="e.g. careers@yourcompany.com" />
+        <span class="desc">Optional. Must be a registered "Send mail as" alias on the Gmail account above. Leave blank to send from the SMTP login email itself.</span>
+      </div>
+      <div class="form-row">
+        <label for="setFromDisplayName">Display name</label>
+        <input type="text" id="setFromDisplayName" placeholder="e.g. AP Online Jobs" />
+        <span class="desc">Shown as the sender's name in the recipient's inbox.</span>
+      </div>
+      <button class="btn" onclick="saveSettings()">Save settings</button>
+    </div>
+  </div>
+
   <script>
     let trendChart, industryChart;
     let companyPageNum = 1;
@@ -600,6 +708,41 @@ INDEX_HTML = """<!DOCTYPE html>
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tab));
       if (tab === 'companies') loadCompanies(companyPageNum);
       if (tab === 'followups') loadFollowups();
+      if (tab === 'settings') loadSettings();
+    }
+
+    async function loadSettings() {
+      const res = await fetch('/api/settings');
+      const s = await res.json();
+      document.getElementById('setSmtpUser').value = s.smtp_user || '';
+      document.getElementById('setFromAlias').value = s.from_alias || '';
+      document.getElementById('setFromDisplayName').value = s.from_display_name || '';
+      document.getElementById('smtpPasswordStatus').textContent = s.smtp_password_set
+        ? 'A password is currently configured. Leave blank to keep it.'
+        : 'Not set yet.';
+    }
+
+    async function saveSettings() {
+      const body = {
+        smtp_user: document.getElementById('setSmtpUser').value.trim(),
+        smtp_password: document.getElementById('setSmtpPassword').value,
+        from_alias: document.getElementById('setFromAlias').value.trim(),
+        from_display_name: document.getElementById('setFromDisplayName').value.trim(),
+      };
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Save failed');
+        showToast('Settings saved', true);
+        document.getElementById('setSmtpPassword').value = '';
+        loadSettings();
+      } catch (e) {
+        showToast(e.message, false);
+      }
     }
 
     function showToast(msg, ok) {
