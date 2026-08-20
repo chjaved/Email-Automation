@@ -26,6 +26,15 @@ _PLACEHOLDER_RE = re.compile(r"\?")
 if USE_POSTGRES:
     import psycopg2
     import psycopg2.extras
+    import psycopg2.pool
+
+    # Bounded pool: caps total open Postgres connections regardless of how
+    # many requests are in flight or whether any individual call site fails
+    # to close its connection. Without this, a bug (or a huge CSV import)
+    # that leaks connections can exhaust Postgres' server-side connection
+    # limit and take down every service sharing that database.
+    POSTGRES_POOL_MAX = int(os.getenv("POSTGRES_POOL_MAX", "10"))
+    _pool = psycopg2.pool.ThreadedConnectionPool(1, POSTGRES_POOL_MAX, DATABASE_URL)
 
     class _PGCursor:
         def __init__(self, cur):
@@ -58,6 +67,7 @@ if USE_POSTGRES:
     class _PGConnection:
         def __init__(self, raw):
             self._raw = raw
+            self._returned = False
 
         def cursor(self):
             return _PGCursor(self._raw.cursor(cursor_factory=psycopg2.extras.RealDictCursor))
@@ -71,10 +81,19 @@ if USE_POSTGRES:
             self._raw.commit()
 
         def close(self):
-            self._raw.close()
+            """Return the connection to the pool instead of actually closing the
+            socket, so the app never opens more than POSTGRES_POOL_MAX connections."""
+            if self._returned:
+                return
+            self._returned = True
+            try:
+                self._raw.rollback()
+            except Exception:
+                pass
+            _pool.putconn(self._raw)
 
     def get_conn():
-        return _PGConnection(psycopg2.connect(DATABASE_URL))
+        return _PGConnection(_pool.getconn())
 
 else:
     def get_conn() -> sqlite3.Connection:

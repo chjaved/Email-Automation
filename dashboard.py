@@ -50,6 +50,13 @@ def api_data(
     end: Optional[str] = Query(None),
 ):
     conn = get_conn()
+    try:
+        return _api_data_impl(conn, industry, start, end)
+    finally:
+        conn.close()
+
+
+def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Optional[str]) -> dict:
     cur = conn.cursor()
 
     # Stats
@@ -182,8 +189,6 @@ def api_data(
         "message": "Campaign healthy" if (not paused and bounce_rate < 0.03) else ("Paused" if paused else f"Bounce rate {bounce_rate:.2%}"),
     }
 
-    conn.close()
-
     return {
         "stats": {
             "total": total,
@@ -207,10 +212,12 @@ def api_data(
 @app.post("/api/mark-customer/{lead_id}")
 def mark_customer(lead_id: int):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("UPDATE leads SET is_customer = 1 WHERE id = ?", (lead_id,))
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE leads SET is_customer = 1 WHERE id = ?", (lead_id,))
+        conn.commit()
+    finally:
+        conn.close()
     return {"ok": True}
 
 
@@ -226,45 +233,46 @@ def api_companies(
     page_size: int = Query(25, ge=1, le=200),
 ):
     conn = get_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    where: List[str] = []
-    params: List[Any] = []
-    if search:
-        where.append("(company_name LIKE ? OR email LIKE ?)")
-        like = f"%{search}%"
-        params.extend([like, like])
-    if status:
-        where.append("status = ?")
-        params.append(status)
-    if industry:
-        where.append("industry = ?")
-        params.append(industry.lower())
+        where: List[str] = []
+        params: List[Any] = []
+        if search:
+            where.append("(company_name LIKE ? OR email LIKE ?)")
+            like = f"%{search}%"
+            params.extend([like, like])
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if industry:
+            where.append("industry = ?")
+            params.append(industry.lower())
 
-    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
 
-    total = cur.execute(f"SELECT COUNT(*) FROM leads {where_sql}", params).fetchone()[0]
+        total = cur.execute(f"SELECT COUNT(*) FROM leads {where_sql}", params).fetchone()[0]
 
-    offset = (page - 1) * page_size
-    cur.execute(
-        f"""
-        SELECT id, company_name, email, industry, location, status, sequence_step,
-               last_contact_at, sent_at, scheduled_at, reply_snippet, is_customer
-        FROM leads
-        {where_sql}
-        ORDER BY id DESC
-        LIMIT ? OFFSET ?
-        """,
-        params + [page_size, offset],
-    )
-    rows = []
-    for row in cur.fetchall():
-        d = dict(row)
-        step = d.get("sequence_step") or 0
-        d["step_label"] = STEP_LABELS.get(step, f"Step {step}")
-        rows.append(d)
-
-    conn.close()
+        offset = (page - 1) * page_size
+        cur.execute(
+            f"""
+            SELECT id, company_name, email, industry, location, status, sequence_step,
+                   last_contact_at, sent_at, scheduled_at, reply_snippet, is_customer
+            FROM leads
+            {where_sql}
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + [page_size, offset],
+        )
+        rows = []
+        for row in cur.fetchall():
+            d = dict(row)
+            step = d.get("sequence_step") or 0
+            d["step_label"] = STEP_LABELS.get(step, f"Step {step}")
+            rows.append(d)
+    finally:
+        conn.close()
 
     return {
         "total": total,
@@ -278,12 +286,14 @@ def api_companies(
 def api_industries():
     """Distinct industries actually present in the leads table (for filter dropdowns)."""
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT DISTINCT industry FROM leads WHERE industry IS NOT NULL AND industry != '' ORDER BY industry"
-    )
-    rows = [r["industry"] for r in cur.fetchall()]
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT industry FROM leads WHERE industry IS NOT NULL AND industry != '' ORDER BY industry"
+        )
+        rows = [r["industry"] for r in cur.fetchall()]
+    finally:
+        conn.close()
     return {"industries": rows}
 
 
@@ -294,12 +304,14 @@ class DeleteIds(BaseModel):
 @app.delete("/api/companies/{lead_id}")
 def api_delete_company(lead_id: int):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM events WHERE lead_id = ?", (lead_id,))
-    cur.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
-    deleted = cur.rowcount
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM events WHERE lead_id = ?", (lead_id,))
+        cur.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
+        deleted = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
     if not deleted:
         raise HTTPException(status_code=404, detail="Lead not found")
     return {"ok": True, "deleted": deleted}
@@ -310,13 +322,15 @@ def api_delete_companies_bulk(body: DeleteIds):
     if not body.ids:
         return {"ok": True, "deleted": 0}
     conn = get_conn()
-    cur = conn.cursor()
-    placeholders = ", ".join(["?"] * len(body.ids))
-    cur.execute(f"DELETE FROM events WHERE lead_id IN ({placeholders})", body.ids)
-    cur.execute(f"DELETE FROM leads WHERE id IN ({placeholders})", body.ids)
-    deleted = cur.rowcount
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        placeholders = ", ".join(["?"] * len(body.ids))
+        cur.execute(f"DELETE FROM events WHERE lead_id IN ({placeholders})", body.ids)
+        cur.execute(f"DELETE FROM leads WHERE id IN ({placeholders})", body.ids)
+        deleted = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
     return {"ok": True, "deleted": deleted}
 
 
@@ -328,30 +342,32 @@ def api_delete_companies_all(
 ):
     """Delete ALL companies, optionally scoped to the current search/status/industry filter."""
     conn = get_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    where: List[str] = []
-    params: List[Any] = []
-    if search:
-        where.append("(company_name LIKE ? OR email LIKE ?)")
-        like = f"%{search}%"
-        params.extend([like, like])
-    if status:
-        where.append("status = ?")
-        params.append(status)
-    if industry:
-        where.append("industry = ?")
-        params.append(industry.lower())
-    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        where: List[str] = []
+        params: List[Any] = []
+        if search:
+            where.append("(company_name LIKE ? OR email LIKE ?)")
+            like = f"%{search}%"
+            params.extend([like, like])
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if industry:
+            where.append("industry = ?")
+            params.append(industry.lower())
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
 
-    cur.execute(f"SELECT id FROM leads {where_sql}", params)
-    ids = [r["id"] for r in cur.fetchall()]
-    if ids:
-        placeholders = ", ".join(["?"] * len(ids))
-        cur.execute(f"DELETE FROM events WHERE lead_id IN ({placeholders})", ids)
-        cur.execute(f"DELETE FROM leads WHERE id IN ({placeholders})", ids)
-    conn.commit()
-    conn.close()
+        cur.execute(f"SELECT id FROM leads {where_sql}", params)
+        ids = [r["id"] for r in cur.fetchall()]
+        if ids:
+            placeholders = ", ".join(["?"] * len(ids))
+            cur.execute(f"DELETE FROM events WHERE lead_id IN ({placeholders})", ids)
+            cur.execute(f"DELETE FROM leads WHERE id IN ({placeholders})", ids)
+        conn.commit()
+    finally:
+        conn.close()
     return {"ok": True, "deleted": len(ids)}
 
 
@@ -359,28 +375,30 @@ def api_delete_companies_all(
 def api_followups():
     """Leads awaiting their next follow-up, with the computed due date."""
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT id, company_name, email, industry, status, sequence_step, last_contact_at
-        FROM leads
-        WHERE status = 'sent' AND sequence_step BETWEEN 1 AND 3 AND last_contact_at IS NOT NULL
-        ORDER BY last_contact_at ASC
-        """
-    )
-    rows = cur.fetchall()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, company_name, email, industry, status, sequence_step, last_contact_at
+            FROM leads
+            WHERE status = 'sent' AND sequence_step BETWEEN 1 AND 3 AND last_contact_at IS NOT NULL
+            ORDER BY last_contact_at ASC
+            """
+        )
+        rows = cur.fetchall()
 
-    # Also surface anything already queued (status='scheduled') with step > 0
-    cur.execute(
-        """
-        SELECT id, company_name, email, industry, status, sequence_step, scheduled_at
-        FROM leads
-        WHERE status = 'scheduled' AND sequence_step > 0
-        ORDER BY scheduled_at ASC
-        """
-    )
-    queued_rows = cur.fetchall()
-    conn.close()
+        # Also surface anything already queued (status='scheduled') with step > 0
+        cur.execute(
+            """
+            SELECT id, company_name, email, industry, status, sequence_step, scheduled_at
+            FROM leads
+            WHERE status = 'scheduled' AND sequence_step > 0
+            ORDER BY scheduled_at ASC
+            """
+        )
+        queued_rows = cur.fetchall()
+    finally:
+        conn.close()
 
     pending = []
     for row in rows:
@@ -501,42 +519,44 @@ async def api_import_csv(file: UploadFile = File(...)):
         rows = _rows_from_csv_text(text)
 
     imported, updated, skipped = 0, 0, 0
-    for row in rows:
-        company = (row.get("Company Name") or row.get("company_name") or row.get("Company") or "").strip()
-        industry = (
-            row.get("Industry") or row.get("industry")
-            or row.get("Category") or row.get("category")
-            or ""
-        ).strip() or "other"
-
-        emails = pick_emails(row)
-        if not emails:
-            fallback = (row.get("Email") or row.get("email") or row.get("E-mail") or "").strip()
-            if fallback:
-                emails = [fallback]
-
-        if not company or not emails:
-            skipped += 1
-            continue
-
-        primary = emails[0]
-        conn = get_conn()
+    conn = get_conn()
+    try:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM leads WHERE email = ?", (primary,))
-        existing = cur.fetchone()
-        if existing:
-            cur.execute(
-                "UPDATE leads SET company_name = ?, industry = ? WHERE id = ?",
-                (company, industry.lower(), existing["id"]),
-            )
-            updated += 1
-        else:
-            cur.execute(
-                "INSERT INTO leads (company_name, email, industry, status) VALUES (?, ?, ?, 'new')",
-                (company, primary, industry.lower()),
-            )
-            imported += 1
+        for row in rows:
+            company = (row.get("Company Name") or row.get("company_name") or row.get("Company") or "").strip()
+            industry = (
+                row.get("Industry") or row.get("industry")
+                or row.get("Category") or row.get("category")
+                or ""
+            ).strip() or "other"
+
+            emails = pick_emails(row)
+            if not emails:
+                fallback = (row.get("Email") or row.get("email") or row.get("E-mail") or "").strip()
+                if fallback:
+                    emails = [fallback]
+
+            if not company or not emails:
+                skipped += 1
+                continue
+
+            primary = emails[0]
+            cur.execute("SELECT id FROM leads WHERE email = ?", (primary,))
+            existing = cur.fetchone()
+            if existing:
+                cur.execute(
+                    "UPDATE leads SET company_name = ?, industry = ? WHERE id = ?",
+                    (company, industry.lower(), existing["id"]),
+                )
+                updated += 1
+            else:
+                cur.execute(
+                    "INSERT INTO leads (company_name, email, industry, status) VALUES (?, ?, ?, 'new')",
+                    (company, primary, industry.lower()),
+                )
+                imported += 1
         conn.commit()
+    finally:
         conn.close()
 
     return {"ok": True, "imported": imported, "updated": updated, "skipped": skipped}

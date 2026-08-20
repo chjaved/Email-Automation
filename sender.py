@@ -297,22 +297,26 @@ def set_lead_status(lead_id: int, status: str, **fields: Any) -> None:
 
 def _get_state(key: str) -> Optional[str]:
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT value FROM state WHERE key = ?", (key,))
-    row = cur.fetchone()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM state WHERE key = ?", (key,))
+        row = cur.fetchone()
+    finally:
+        conn.close()
     return row["value"] if row else None
 
 
 def _set_state(key: str, value: str) -> None:
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (key, value),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def is_paused() -> bool:
@@ -330,13 +334,15 @@ def reset_pause() -> None:
 
 def _trailing_bounce_rate() -> float:
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT status FROM leads WHERE sent_at IS NOT NULL ORDER BY sent_at DESC LIMIT ?",
-        (BOUNCE_RATE_WINDOW,),
-    )
-    rows = cur.fetchall()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT status FROM leads WHERE sent_at IS NOT NULL ORDER BY sent_at DESC LIMIT ?",
+            (BOUNCE_RATE_WINDOW,),
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
     if not rows:
         return 0.0
     bounces = sum(1 for r in rows if r["status"] in ("bounced",))
