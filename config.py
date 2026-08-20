@@ -1,0 +1,65 @@
+"""Campaign Engine configuration."""
+import logging
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent
+
+DB_PATH = BASE_DIR / "campaign.db"
+LOG_PATH = BASE_DIR / "campaign.log"
+DO_NOT_EMAIL_PATH = BASE_DIR / "do_not_email.csv"
+GMAIL_CREDENTIALS = BASE_DIR / "credentials.json"
+GMAIL_TOKEN = BASE_DIR / "token.json"
+
+TIMEZONE = os.getenv("TIMEZONE", "Asia/Kuala_Lumpur")
+DAILY_CAP = int(os.getenv("DAILY_CAP", "20"))
+FROM_ALIAS = os.getenv("FROM_ALIAS", "").strip()
+FROM_DISPLAY_NAME = os.getenv("FROM_DISPLAY_NAME", "JAVED JABBAR").strip()
+MIN_GAP_SECONDS = int(os.getenv("MIN_GAP_SECONDS", "90"))
+
+# SMTP (Gmail) settings
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
+
+# Company profile PDF to attach to every outbound email (optional; skipped if missing)
+ATTACHMENT_PATH = Path(os.getenv("ATTACHMENT_PATH", str(BASE_DIR / "AP_ONLINE_JOBS_COMPANY_PROFILE.pdf")))
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+OPENAI_MINI_MODEL = os.getenv("OPENAI_MINI_MODEL", "gpt-4o-mini")
+
+SEND_INTERVAL_SECONDS = int(os.getenv("SEND_INTERVAL_SECONDS", "30"))
+SCRAPE_DELAY_SECONDS = float(os.getenv("SCRAPE_DELAY_SECONDS", "3"))
+SCRAPE_TIMEOUT_SECONDS = int(os.getenv("SCRAPE_TIMEOUT_SECONDS", "10"))
+BOUNCE_RATE_WINDOW = int(os.getenv("BOUNCE_RATE_WINDOW", "100"))
+BOUNCE_PAUSE_THRESHOLD = float(os.getenv("BOUNCE_PAUSE_THRESHOLD", "0.03"))
+
+FOLLOWUP_SCHEDULE = [int(x) for x in os.getenv("FOLLOWUP_SCHEDULE", "3,7,14").split(",") if x.strip()]
+# Default to 0.0.0.0 so this binds correctly on Railway/containers; override locally if needed.
+DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+# Railway/Render/Heroku-style platforms inject PORT; prefer that over DASHBOARD_PORT if set.
+DASHBOARD_PORT = int(os.getenv("PORT") or os.getenv("DASHBOARD_PORT", "8000"))
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+]
+
+
+def setup_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[
+            logging.FileHandler(LOG_PATH, encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+    )

@@ -1,0 +1,658 @@
+"""SMTP sender + bounce/reply detection.
+
+Sends via Gmail SMTP with an authenticated `SMTP_USER` and (optionally) a
+different `FROM_ALIAS` address that must be a registered "send-as" alias
+on the same Gmail account.
+"""
+import email.utils
+import logging
+import mimetypes
+import smtplib
+import sqlite3
+import time
+from datetime import datetime
+from email.message import EmailMessage
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+from config import (
+    ATTACHMENT_PATH,
+    BOUNCE_PAUSE_THRESHOLD,
+    BOUNCE_RATE_WINDOW,
+    FOLLOWUP_SCHEDULE,
+    FROM_ALIAS,
+    FROM_DISPLAY_NAME,
+    SEND_INTERVAL_SECONDS,
+    SMTP_HOST,
+    SMTP_PASSWORD,
+    SMTP_PORT,
+    SMTP_USER,
+    TIMEZONE,
+)
+from db import get_conn, log_event
+from followups import get_followup_body, is_final
+from generator import generate_for_lead
+from leads import add_do_not_email, is_do_not_email
+from scheduler import build_daily_schedule
+
+logger = logging.getLogger(__name__)
+
+REMOVE_KEYWORDS = [
+    "remove",
+    "unsubscribe",
+    "stop",
+    "opt out",
+    "do not email",
+    "don't email",
+    "remove me",
+]
+
+
+# ---------------------------------------------------------------------------
+# SMTP session
+# ---------------------------------------------------------------------------
+class SMTPSession:
+    """Thin wrapper around smtplib for a single SMTP session."""
+
+    def __init__(self) -> None:
+        if not SMTP_USER or not SMTP_PASSWORD:
+            raise RuntimeError(
+                "SMTP_USER / SMTP_PASSWORD not configured. Set them in .env."
+            )
+        self.host = SMTP_HOST
+        self.port = SMTP_PORT
+        self.user = SMTP_USER
+        self.password = SMTP_PASSWORD
+        self._smtp: Optional[smtplib.SMTP] = None
+
+    def __enter__(self) -> "SMTPSession":
+        self._smtp = smtplib.SMTP(self.host, self.port, timeout=30)
+        self._smtp.ehlo()
+        self._smtp.starttls()
+        self._smtp.ehlo()
+        self._smtp.login(self.user, self.password)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._smtp is not None:
+            try:
+                self._smtp.quit()
+            except Exception:
+                pass
+            self._smtp = None
+
+    def send(self, from_addr: str, to_addrs: List[str], msg: EmailMessage) -> None:
+        assert self._smtp is not None, "SMTP session not open"
+        self._smtp.send_message(msg, from_addr=from_addr, to_addrs=to_addrs)
+
+
+def get_from_address() -> str:
+    """Return the address to use as the visible `From:` header."""
+    return (FROM_ALIAS or SMTP_USER).strip()
+
+
+def verify_sender() -> str:
+    """Best-effort validation that SMTP credentials + alias are usable."""
+    from_addr = get_from_address()
+    if not from_addr:
+        raise RuntimeError("No FROM_ALIAS or SMTP_USER configured")
+    if not SMTP_USER or not SMTP_PASSWORD:
+        raise RuntimeError(
+            "SMTP_USER / SMTP_PASSWORD missing. Set them in .env before running."
+        )
+    with SMTPSession():
+        pass
+    logger.info("SMTP login OK for %s; sending as %s", SMTP_USER, from_addr)
+    return from_addr
+
+
+# ---------------------------------------------------------------------------
+# Message building
+# ---------------------------------------------------------------------------
+def _attach_pdf(msg: EmailMessage) -> None:
+    """Attach the company profile PDF if present."""
+    path: Path = ATTACHMENT_PATH
+    if not path.exists():
+        logger.warning("Attachment not found at %s; sending without PDF", path)
+        return
+
+    ctype, _ = mimetypes.guess_type(str(path))
+    maintype, subtype = (ctype or "application/pdf").split("/", 1)
+    with open(path, "rb") as f:
+        data = f.read()
+    msg.add_attachment(
+        data,
+        maintype=maintype,
+        subtype=subtype,
+        filename=path.name,
+    )
+
+
+def _build_message(
+    to: str,
+    from_addr: str,
+    subject: str,
+    body: str,
+    in_reply_to: str = "",
+    cc: Optional[List[str]] = None,
+) -> EmailMessage:
+    msg = EmailMessage()
+    display = FROM_DISPLAY_NAME or "AP Online Jobs"
+    msg["From"] = email.utils.formataddr((display, from_addr))
+    msg["To"] = to
+    if cc:
+        msg["Cc"] = ", ".join(cc)
+    msg["Reply-To"] = from_addr
+    msg["Subject"] = subject
+    msg["Date"] = email.utils.formatdate(localtime=True)
+    msg["Message-ID"] = email.utils.make_msgid(domain=from_addr.split("@")[-1] or None)
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+        msg["References"] = in_reply_to
+    msg.set_content(body)
+    _attach_pdf(msg)
+    return msg
+
+
+def get_email_body(lead: sqlite3.Row) -> Dict[str, str]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM emails WHERE lead_id = ?", (lead["id"],))
+    cached = cur.fetchone()
+    conn.close()
+    if cached:
+        return {"subject": cached["subject"], "body": cached["body"]}
+    return generate_for_lead(lead)
+
+
+# ---------------------------------------------------------------------------
+# Sending
+# ---------------------------------------------------------------------------
+def send_message(
+    session: SMTPSession,
+    lead: sqlite3.Row,
+    from_email: str,
+    step: int = 0,
+    in_reply_to: str = "",
+    thread_id: str = "",
+) -> Optional[Dict[str, str]]:
+    to = lead["email"]
+
+    email_data = get_email_body(lead)
+    subject = email_data["subject"]
+    body = email_data["body"]
+    if step > 0:
+        if not subject.lower().startswith("re:"):
+            subject = f"Re: {subject}"
+        body = get_followup_body(lead, step)
+
+    msg = _build_message(to, from_email, subject, body, in_reply_to=in_reply_to)
+
+    try:
+        session.send(from_addr=from_email, to_addrs=[to], msg=msg)
+    except Exception as e:
+        logger.error("Failed to send to %s: %s", to, e)
+        raise
+
+    message_id = msg["Message-ID"]
+    logger.info("Sent to %s (message-id %s, step %s)", to, message_id, step)
+    return {
+        "message_id": message_id,
+        "thread_id": thread_id or message_id,
+        "subject": subject,
+        "body": body,
+        "message_id_header": message_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Lead status + state (unchanged behaviour)
+# ---------------------------------------------------------------------------
+def set_lead_status(lead_id: int, status: str, **fields: Any) -> None:
+    conn = get_conn()
+    cur = conn.cursor()
+
+    columns = ["status = ?"]
+    values: List[Any] = [status]
+    for k, v in fields.items():
+        columns.append(f"{k} = ?")
+        values.append(v)
+
+    values.append(lead_id)
+    cur.execute(f"UPDATE leads SET {', '.join(columns)} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+
+
+def _get_state(key: str) -> Optional[str]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM state WHERE key = ?", (key,))
+    row = cur.fetchone()
+    conn.close()
+    return row["value"] if row else None
+
+
+def _set_state(key: str, value: str) -> None:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    conn.commit()
+    conn.close()
+
+
+def is_paused() -> bool:
+    return _get_state("paused") == "1"
+
+
+def pause_campaign(reason: str) -> None:
+    logger.warning("CAMPAIGN PAUSED: %s", reason)
+    _set_state("paused", "1")
+
+
+def reset_pause() -> None:
+    _set_state("paused", "0")
+
+
+def _trailing_bounce_rate() -> float:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT status FROM leads WHERE sent_at IS NOT NULL ORDER BY sent_at DESC LIMIT ?",
+        (BOUNCE_RATE_WINDOW,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    if not rows:
+        return 0.0
+    bounces = sum(1 for r in rows if r["status"] in ("bounced",))
+    return bounces / len(rows)
+
+
+def check_bounce_rate_safety() -> bool:
+    rate = _trailing_bounce_rate()
+    logger.info("Trailing bounce rate: %.2f%%", rate * 100)
+    if rate > BOUNCE_PAUSE_THRESHOLD:
+        pause_campaign(
+            f"Bounce rate over last {BOUNCE_RATE_WINDOW} sends is {rate:.2%}, "
+            f"exceeding {BOUNCE_PAUSE_THRESHOLD:.2%}."
+        )
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# IMAP bounce/reply detection
+# ---------------------------------------------------------------------------
+def _fetch_recent_inbox_messages(days: int = 7) -> List[Dict[str, Any]]:
+    """Return a list of {"from": str, "subject": str, "body": str} dicts from
+    the last `days` days. Uses IMAP with the same SMTP credentials.
+    Returns an empty list on any failure (bounce detection is best-effort)."""
+    import imaplib
+    import email as email_mod
+
+    try:
+        imap = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
+        imap.login(SMTP_USER, SMTP_PASSWORD)
+        imap.select("INBOX", readonly=True)
+        since_date = (datetime.now() - _timedelta(days=days)).strftime("%d-%b-%Y")
+        typ, data = imap.search(None, f'(SINCE "{since_date}")')
+        if typ != "OK":
+            imap.logout()
+            return []
+        results: List[Dict[str, Any]] = []
+        for num in data[0].split()[-200:]:  # cap
+            typ, msg_data = imap.fetch(num, "(RFC822)")
+            if typ != "OK":
+                continue
+            raw = msg_data[0][1]
+            parsed = email_mod.message_from_bytes(raw)
+            body = ""
+            if parsed.is_multipart():
+                for part in parsed.walk():
+                    if part.get_content_type() == "text/plain":
+                        payload = part.get_payload(decode=True) or b""
+                        body += payload.decode(
+                            part.get_content_charset() or "utf-8", errors="ignore"
+                        )
+            else:
+                payload = parsed.get_payload(decode=True) or b""
+                body = payload.decode(
+                    parsed.get_content_charset() or "utf-8", errors="ignore"
+                )
+            results.append(
+                {
+                    "from": (parsed.get("From") or "").lower(),
+                    "subject": parsed.get("Subject") or "",
+                    "body": body,
+                }
+            )
+        imap.logout()
+        return results
+    except Exception as e:
+        logger.warning("IMAP fetch failed: %s", e)
+        return []
+
+
+def _timedelta(days: int):
+    from datetime import timedelta
+
+    return timedelta(days=days)
+
+
+def detect_bounces_and_replies(from_email: str) -> None:
+    """Very lightweight inbox scan: mark leads as bounced/replied/unsubscribed."""
+    messages = _fetch_recent_inbox_messages(days=7)
+    if not messages:
+        return
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, email, status FROM leads WHERE sent_at IS NOT NULL "
+        "AND status NOT IN ('replied','unsubscribed','bounced')"
+    )
+    sent_leads = {row["email"].lower(): row["id"] for row in cur.fetchall()}
+    conn.close()
+
+    from_email_lower = from_email.lower()
+    for m in messages:
+        sender = m["from"]
+        if "mailer-daemon" in sender or "postmaster" in sender:
+            # try to extract the failed recipient from body
+            import re as _re
+
+            found = _re.findall(
+                r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", m["body"]
+            )
+            for addr in found:
+                if addr.lower() == from_email_lower or addr.lower() == SMTP_USER.lower():
+                    continue
+                lead_id = sent_leads.get(addr.lower())
+                if lead_id:
+                    set_lead_status(lead_id, "bounced")
+                    log_event(lead_id, "bounced")
+                    logger.info("Marked lead %s as bounced (%s)", lead_id, addr)
+            continue
+
+        # Reply from an actual recipient
+        for lead_email, lead_id in list(sent_leads.items()):
+            if lead_email in sender:
+                snippet = (m["body"] or "")[:500].strip()
+                if any(k in m["body"].lower() for k in REMOVE_KEYWORDS):
+                    add_do_not_email(lead_email)
+                    set_lead_status(
+                        lead_id,
+                        "unsubscribed",
+                        reply_snippet=snippet,
+                        last_contact_at=datetime.now(ZoneInfo(TIMEZONE)).isoformat(),
+                    )
+                    log_event(lead_id, "unsubscribed", snippet)
+                    logger.info("Lead %s (%s) unsubscribed", lead_id, lead_email)
+                else:
+                    set_lead_status(
+                        lead_id,
+                        "replied",
+                        reply_snippet=snippet,
+                        last_contact_at=datetime.now(ZoneInfo(TIMEZONE)).isoformat(),
+                    )
+                    log_event(lead_id, "replied", snippet)
+                    logger.info("Lead %s (%s) replied", lead_id, lead_email)
+                sent_leads.pop(lead_email, None)
+
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+def _due_leads() -> List[sqlite3.Row]:
+    now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM leads WHERE status = 'scheduled' AND scheduled_at IS NOT NULL "
+        "AND scheduled_at <= ? ORDER BY scheduled_at",
+        (now,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+
+def send_due(session: SMTPSession, from_email: str) -> int:
+    due = _due_leads()
+    if not due:
+        return 0
+
+    sent_count = 0
+    for lead in due:
+        if is_paused():
+            logger.warning("Campaign is paused; stopping send loop.")
+            return sent_count
+
+        if is_do_not_email(lead["email"]):
+            logger.info("Skipping %s: in do_not_email.csv", lead["email"])
+            set_lead_status(lead["id"], "unsubscribed")
+            continue
+
+        if is_final(lead["status"]):
+            continue
+
+        if not check_bounce_rate_safety():
+            return sent_count
+
+        step = lead["sequence_step"] or 0
+        in_reply_to = lead["gmail_message_id_header"] or ""
+        thread_id = lead["gmail_thread_id"] or ""
+
+        try:
+            result = send_message(
+                session,
+                lead,
+                from_email,
+                step=step,
+                in_reply_to=in_reply_to,
+                thread_id=thread_id,
+            )
+            if result:
+                now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
+                next_step = step + 1
+
+                if step == 0:
+                    log_event(lead["id"], "sent")
+                else:
+                    log_event(lead["id"], f"followup_{step}", f"Step {step} follow-up")
+
+                if step == len(FOLLOWUP_SCHEDULE):
+                    new_status = "completed"
+                    next_step = step + 1
+                else:
+                    new_status = "sent"
+
+                set_lead_status(
+                    lead["id"],
+                    new_status,
+                    sequence_step=next_step,
+                    last_contact_at=now,
+                    sent_at=now,
+                    gmail_message_id=result["message_id"],
+                    gmail_thread_id=result["thread_id"],
+                    gmail_message_id_header=result.get("message_id_header", ""),
+                    scheduled_at=None,
+                )
+                sent_count += 1
+                logger.info(
+                    "Marked lead %s as %s (step %d)", lead["id"], new_status, step
+                )
+        except Exception as e:
+            logger.error("Send failed for lead %s: %s", lead["id"], e)
+
+    return sent_count
+
+
+def _should_check_inbox() -> bool:
+    last = _get_state("last_inbox_check")
+    if not last:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(last)
+        return (datetime.now(ZoneInfo(TIMEZONE)) - last_dt).total_seconds() >= 300
+    except Exception:
+        return True
+
+
+def _check_inbox(from_email: str) -> None:
+    detect_bounces_and_replies(from_email)
+    _set_state("last_inbox_check", datetime.now(ZoneInfo(TIMEZONE)).isoformat())
+
+
+def run_sender_loop() -> None:
+    logger.info("Starting SMTP sender daemon")
+
+    if is_paused():
+        logger.warning(
+            "Campaign is currently paused. Use `python main.py reset-pause` to resume."
+        )
+        return
+
+    from_email = verify_sender()
+    logger.info("Sending as %s", from_email)
+
+    try:
+        while not is_paused():
+            build_daily_schedule()
+
+            due = _due_leads()
+            if due:
+                with SMTPSession() as session:
+                    send_due(session, from_email)
+
+            if _should_check_inbox():
+                _check_inbox(from_email)
+
+            if is_paused():
+                logger.warning("Campaign paused during loop")
+                break
+
+            time.sleep(SEND_INTERVAL_SECONDS)
+    except KeyboardInterrupt:
+        logger.info("Sender daemon stopped by user.")
+
+
+# ---------------------------------------------------------------------------
+# Single-lead send (used by the dashboard "Send now" button)
+# ---------------------------------------------------------------------------
+def send_lead_now(lead_id: int) -> Dict[str, Any]:
+    """Immediately send the next due email (initial or follow-up) for one lead.
+
+    Bypasses the schedule/window but still respects do-not-email, final
+    statuses, and updates lead state the same way the normal send loop does.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM leads WHERE id = ?", (lead_id,))
+    lead = cur.fetchone()
+    conn.close()
+
+    if lead is None:
+        raise ValueError(f"Lead {lead_id} not found")
+
+    if is_do_not_email(lead["email"]):
+        set_lead_status(lead_id, "unsubscribed")
+        raise ValueError(f"{lead['email']} is on the do-not-email list")
+
+    if is_final(lead["status"]):
+        raise ValueError(f"Lead {lead_id} is already in a final state: {lead['status']}")
+
+    from_email = verify_sender()
+    step = lead["sequence_step"] or 0
+    in_reply_to = lead["gmail_message_id_header"] or ""
+    thread_id = lead["gmail_thread_id"] or ""
+
+    with SMTPSession() as session:
+        result = send_message(
+            session,
+            lead,
+            from_email,
+            step=step,
+            in_reply_to=in_reply_to,
+            thread_id=thread_id,
+        )
+
+    if not result:
+        raise RuntimeError("Send failed for unknown reason")
+
+    now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
+    next_step = step + 1
+
+    if step == 0:
+        log_event(lead_id, "sent")
+    else:
+        log_event(lead_id, f"followup_{step}", f"Step {step} follow-up")
+
+    if step == len(FOLLOWUP_SCHEDULE):
+        new_status = "completed"
+        next_step = step + 1
+    else:
+        new_status = "sent"
+
+    set_lead_status(
+        lead_id,
+        new_status,
+        sequence_step=next_step,
+        last_contact_at=now,
+        sent_at=now,
+        gmail_message_id=result["message_id"],
+        gmail_thread_id=result["thread_id"],
+        gmail_message_id_header=result.get("message_id_header", ""),
+        scheduled_at=None,
+    )
+
+    return {
+        "lead_id": lead_id,
+        "company_name": lead["company_name"],
+        "email": lead["email"],
+        "step": step,
+        "new_status": new_status,
+        "subject": result["subject"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# One-off test-send helper (used by CLI: `python main.py test-send <email>`)
+# ---------------------------------------------------------------------------
+def send_test_email(to_address: str, company_name: str = "Test Company",
+                    industry: str = "cleaning") -> Dict[str, str]:
+    """Generate a preview email using the current template and send it directly."""
+    from_email = verify_sender()
+
+    # Build a synthetic lead-like row without touching the DB
+    class _Row(dict):
+        def __getitem__(self, k):
+            return super().__getitem__(k) if k in self else None
+
+    fake_lead = _Row(
+        id=-1,
+        company_name=company_name,
+        email=to_address,
+        industry=industry,
+        location="Malaysia",
+        enriched_data=None,
+    )
+
+    # Generator caches by lead_id in DB; use direct helpers to avoid persistence.
+    from generator import _ai_personalisation, _assemble_body, _build_subject, _normalise_industry
+
+    norm_industry = _normalise_industry(industry)
+    subject = _build_subject(company_name)
+    personalisation = _ai_personalisation(company_name, norm_industry, "Malaysia", {})
+    body = _assemble_body(company_name, norm_industry, personalisation)
+
+    msg = _build_message(to_address, from_email, subject, body)
+    with SMTPSession() as session:
+        session.send(from_addr=from_email, to_addrs=[to_address], msg=msg)
+    logger.info("Test email sent from %s to %s", from_email, to_address)
+    return {"subject": subject, "body": body, "from": from_email, "to": to_address}

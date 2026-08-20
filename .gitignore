@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+credentials.json
+token.json
+campaign.db
+campaign.log
+do_not_email.csv
+*.csv
