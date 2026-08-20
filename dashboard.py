@@ -68,27 +68,27 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
     if industry:
         ind_where.append("industry = ?")
         ind_params.append(industry.lower())
-    total = cur.execute(f"SELECT COUNT(*) FROM leads {_where_clause(ind_where)}", ind_params).fetchone()[0]
+    total = cur.execute(f"SELECT COUNT(*) AS n FROM leads {_where_clause(ind_where)}", ind_params).fetchone()["n"]
 
     # Total sends (any sent_at)
     where2, params2 = _lead_filters(industry, start, end, "sent_at")
     where2.append("sent_at IS NOT NULL")
-    sent = cur.execute(f"SELECT COUNT(*) FROM leads {_where_clause(where2)}", params2).fetchone()[0]
+    sent = cur.execute(f"SELECT COUNT(*) AS n FROM leads {_where_clause(where2)}", params2).fetchone()["n"]
 
     bounces = cur.execute(
-        f"SELECT COUNT(*) FROM leads {_where_clause(ind_where + ['status = \'bounced\''])}",
+        f"SELECT COUNT(*) AS n FROM leads {_where_clause(ind_where + ['status = \'bounced\''])}",
         list(ind_params),
-    ).fetchone()[0]
+    ).fetchone()["n"]
 
     replies = cur.execute(
-        f"SELECT COUNT(*) FROM leads {_where_clause(ind_where + ['status = \'replied\''])}",
+        f"SELECT COUNT(*) AS n FROM leads {_where_clause(ind_where + ['status = \'replied\''])}",
         list(ind_params),
-    ).fetchone()[0]
+    ).fetchone()["n"]
 
     unsubscribes = cur.execute(
-        f"SELECT COUNT(*) FROM leads {_where_clause(ind_where + ['status = \'unsubscribed\''])}",
+        f"SELECT COUNT(*) AS n FROM leads {_where_clause(ind_where + ['status = \'unsubscribed\''])}",
         list(ind_params),
-    ).fetchone()[0]
+    ).fetchone()["n"]
 
     delivered = max(sent - bounces, 0)
     reply_rate = (replies / delivered * 100) if delivered > 0 else 0.0
@@ -118,8 +118,8 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
         "status IN ('enriched', 'scheduled', 'sent', 'completed', 'replied', 'bounced', 'unsubscribed')"
     ]
     enriched = cur.execute(
-        f"SELECT COUNT(*) FROM leads {_where_clause(enriched_where)}", list(ind_params)
-    ).fetchone()[0]
+        f"SELECT COUNT(*) AS n FROM leads {_where_clause(enriched_where)}", list(ind_params)
+    ).fetchone()["n"]
     funnel = {"leads": total, "enriched": enriched, "sent": sent, "replied": replies}
 
     # Sequence counts
@@ -253,7 +253,7 @@ def api_companies(
 
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
 
-        total = cur.execute(f"SELECT COUNT(*) FROM leads {where_sql}", params).fetchone()[0]
+        total = cur.execute(f"SELECT COUNT(*) AS n FROM leads {where_sql}", params).fetchone()["n"]
 
         offset = (page - 1) * page_size
         cur.execute(

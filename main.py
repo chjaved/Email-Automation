@@ -53,30 +53,30 @@ def cmd_stats(args: argparse.Namespace) -> None:
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT COUNT(*) FROM leads")
-    total = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS n FROM leads")
+    total = cur.fetchone()["n"]
 
-    cur.execute("SELECT COUNT(*) FROM leads WHERE status = 'enriched'")
-    enriched = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS n FROM leads WHERE status = 'enriched'")
+    enriched = cur.fetchone()["n"]
 
     today = datetime.now(ZoneInfo(TIMEZONE)).date().isoformat()
     cur.execute(
-        "SELECT COUNT(*) FROM leads WHERE status = 'sent' AND substr(sent_at, 1, 10) = ?",
+        "SELECT COUNT(*) AS n FROM leads WHERE status = 'sent' AND substr(sent_at, 1, 10) = ?",
         (today,),
     )
-    sent_today = cur.fetchone()[0]
+    sent_today = cur.fetchone()["n"]
 
-    cur.execute("SELECT COUNT(*) FROM leads WHERE status = 'sent'")
-    sent_total = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS n FROM leads WHERE status = 'sent'")
+    sent_total = cur.fetchone()["n"]
 
-    cur.execute("SELECT COUNT(*) FROM leads WHERE status = 'bounced'")
-    bounces = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS n FROM leads WHERE status = 'bounced'")
+    bounces = cur.fetchone()["n"]
 
-    cur.execute("SELECT COUNT(*) FROM leads WHERE status = 'replied'")
-    replies = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS n FROM leads WHERE status = 'replied'")
+    replies = cur.fetchone()["n"]
 
-    cur.execute("SELECT COUNT(*) FROM leads WHERE status = 'unsubscribed'")
-    unsubscribes = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) AS n FROM leads WHERE status = 'unsubscribed'")
+    unsubscribes = cur.fetchone()["n"]
 
     print("=" * 50)
     print("CAMPAIGN STATS")
