@@ -17,6 +17,8 @@ from db import get_conn, init_db
 from send_batch import pick_emails
 from settings import get_public_settings, update_settings
 
+init_db()
+
 app = FastAPI(title="Campaign Engine Dashboard")
 app.add_middleware(
     CORSMiddleware,
