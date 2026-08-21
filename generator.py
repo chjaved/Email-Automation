@@ -221,6 +221,7 @@ def _ai_personalisation(
     industry: str,
     location: str,
     enriched: Dict[str, Any],
+    ai_context: str = "",
 ) -> Dict[str, str]:
     profile = _industry_profile(industry)
     summary = enriched.get("summary", "")
@@ -241,9 +242,19 @@ def _ai_personalisation(
     if client is None:
         return {"opening": fallback_opening, "value": fallback_value}
 
+    account_brief = ""
+    if ai_context and ai_context.strip():
+        account_brief = (
+            "SENDER ACCOUNT BRIEF (this is who is sending the email — study "
+            "this carefully and let it shape the tone, value proposition and "
+            "any references you make; NEVER invent facts beyond it):\n"
+            f"{ai_context.strip()}\n\n"
+        )
+
     prompt = (
         "You are writing two short paragraphs that will be inserted into a "
-        "formal B2B recruitment email sent to a Malaysian employer.\n\n"
+        "formal B2B email sent to a company.\n\n"
+        f"{account_brief}"
         f"Recipient company: {company_name}\n"
         f"Normalised industry: {industry}\n"
         f"Location: {location}\n"
@@ -385,7 +396,20 @@ def _get_or_generate(lead: sqlite3.Row) -> Dict[str, str]:
     location = (lead["location"] or "").strip()
 
     subject = _build_subject(company_name)
-    personalisation = _ai_personalisation(company_name, industry, location, enriched)
+
+    ai_context = ""
+    try:
+        lead_user_id = lead["user_id"]
+    except (KeyError, IndexError):
+        lead_user_id = None
+    if lead_user_id:
+        try:
+            from settings import get_ai_context
+            ai_context = get_ai_context(lead_user_id)
+        except Exception:
+            ai_context = ""
+
+    personalisation = _ai_personalisation(company_name, industry, location, enriched, ai_context)
     body = _assemble_body(company_name, industry, personalisation)
 
     conn = get_conn()

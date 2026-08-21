@@ -108,6 +108,31 @@ def _strip_codeblock(text: str) -> str:
     return re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.DOTALL).strip()
 
 
+def _lead_ai_context(lead: sqlite3.Row) -> str:
+    try:
+        user_id = lead["user_id"]
+    except (KeyError, IndexError):
+        return ""
+    if not user_id:
+        return ""
+    try:
+        from settings import get_ai_context
+        return get_ai_context(user_id) or ""
+    except Exception:
+        return ""
+
+
+def _account_brief_block(lead: sqlite3.Row) -> str:
+    ctx = _lead_ai_context(lead)
+    if not ctx.strip():
+        return ""
+    return (
+        "SENDER ACCOUNT BRIEF (who is sending — let this shape tone and value, "
+        "never invent facts beyond it):\n"
+        f"{ctx.strip()}\n\n"
+    )
+
+
 def _generate_step1(lead: sqlite3.Row) -> str:
     company = lead["company_name"] or "your company"
     industry = lead["industry"] or "other"
@@ -116,13 +141,14 @@ def _generate_step1(lead: sqlite3.Row) -> str:
     body = original.get("body", "")
 
     prompt = (
+        f"{_account_brief_block(lead)}"
         f"Write a very short, polite follow-up bump for {company} (industry: {industry}).\n"
         f"Original subject: {subject}\n"
         f"Original email angle: {body[:600]}\n\n"
         "Rules:\n"
         "- Only 2-3 short lines.\n"
         "- Reference the original topic without repeating the full pitch.\n"
-        "- No long paragraphs, no attachments, no all-caps, no words like 'free', 'guaranteed', or 'urgent'.\n"
+        "- No long paragraphs, no all-caps, no words like 'free', 'guaranteed', or 'urgent'.\n"
         "- End with a soft question.\n"
         "Return only the body text."
     )
@@ -135,17 +161,18 @@ def _generate_step2(lead: sqlite3.Row) -> str:
     enriched = lead["enriched_data"] or ""
 
     prompt = (
+        f"{_account_brief_block(lead)}"
         f"Write a short follow-up email for {company} (industry: {industry}).\n"
         f"Company context: {enriched[:600]}\n\n"
-        "This follow-up should introduce a NEW value angle: our AI interview software, "
-        "which lets employers interview foreign workers directly, receive candidate reports, "
-        "and manage hiring in one system. Do NOT repeat the visa/recruitment pitch from the first email.\n\n"
+        "This follow-up should introduce a NEW value angle from the sender "
+        "account brief above (if provided) — do NOT repeat the pitch from the "
+        "first email. If no brief was provided, introduce our AI interview "
+        "software as the new angle.\n\n"
         "Rules:\n"
         "- 3-5 short paragraphs max.\n"
-        "- One clear value point about the AI interview software.\n"
+        "- One clear value point.\n"
         "- Soft call to action: 15-minute call or WhatsApp reply.\n"
-        "- No attachments, no all-caps, no words like 'free', 'guaranteed', or 'urgent'.\n"
-        "- Include the link https://onlinejobs.my exactly once.\n"
+        "- No all-caps, no words like 'free', 'guaranteed', or 'urgent'.\n"
         "Return only the body text."
     )
     body = _call_openai(prompt, temperature=0.8).strip()

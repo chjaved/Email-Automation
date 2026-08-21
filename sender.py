@@ -118,23 +118,36 @@ def verify_sender(user_id: int) -> str:
 # ---------------------------------------------------------------------------
 # Message building
 # ---------------------------------------------------------------------------
-def _attach_pdf(msg: EmailMessage) -> None:
-    """Attach the company profile PDF if present."""
+def _attach_pdf(msg: EmailMessage, user_id: Optional[int] = None) -> None:
+    """Attach the per-user file if one is uploaded, else fall back to the
+    global ATTACHMENT_PATH on disk. Silently sends without attachment if
+    neither is available."""
+    # 1) Per-user attachment stored in DB (survives redeploys)
+    if user_id is not None:
+        try:
+            from settings import get_attachment
+            att = get_attachment(user_id)
+        except Exception as e:
+            logger.warning("Failed to load per-user attachment: %s", e)
+            att = None
+        if att is not None:
+            data, name, mime = att
+            maintype, _, subtype = (mime or "application/octet-stream").partition("/")
+            if not subtype:
+                maintype, subtype = "application", "octet-stream"
+            msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
+            return
+
+    # 2) Legacy global fallback (env-configured path on disk)
     path: Path = ATTACHMENT_PATH
     if not path.exists():
-        logger.warning("Attachment not found at %s; sending without PDF", path)
+        logger.info("No per-user attachment and global %s missing; sending without PDF", path)
         return
-
     ctype, _ = mimetypes.guess_type(str(path))
     maintype, subtype = (ctype or "application/pdf").split("/", 1)
     with open(path, "rb") as f:
         data = f.read()
-    msg.add_attachment(
-        data,
-        maintype=maintype,
-        subtype=subtype,
-        filename=path.name,
-    )
+    msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=path.name)
 
 
 _SIGNATURE_BLOCK_RE = re.compile(r"\n\n(Kind regards,\n\n.*?)(\n\n-+\n.*)?$", re.DOTALL)
@@ -224,7 +237,7 @@ def _build_message(
         maintype, subtype = (ctype or "image/png").split("/", 1)
         with open(SIGNATURE_LOGO_PATH, "rb") as f:
             html_part.add_related(f.read(), maintype=maintype, subtype=subtype, cid="logo")
-    _attach_pdf(msg)
+    _attach_pdf(msg, user_id)
     return msg
 
 

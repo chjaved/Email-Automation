@@ -124,6 +124,10 @@ def _add_missing_columns_sqlite(conn) -> None:
         ],
         "user_settings": [
             ("cc_enabled", "INTEGER", "1"),
+            ("ai_context", "TEXT", "NULL"),
+            ("attachment_bytes", "BLOB", "NULL"),
+            ("attachment_name", "TEXT", "NULL"),
+            ("attachment_mime", "TEXT", "NULL"),
         ],
     }
     for table, defs in columns.items():
@@ -149,6 +153,10 @@ def _add_missing_columns_postgres(conn) -> None:
         ],
         "user_settings": [
             ("cc_enabled", "INTEGER", "1"),
+            ("ai_context", "TEXT", "NULL"),
+            ("attachment_bytes", "BYTEA", "NULL"),
+            ("attachment_name", "TEXT", "NULL"),
+            ("attachment_mime", "TEXT", "NULL"),
         ],
     }
     cur = conn.cursor()
@@ -235,6 +243,10 @@ CREATE TABLE IF NOT EXISTS user_settings (
     from_alias TEXT,
     from_display_name TEXT,
     cc_enabled INTEGER DEFAULT 1,
+    ai_context TEXT,
+    attachment_bytes BLOB,
+    attachment_name TEXT,
+    attachment_mime TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 """
@@ -320,7 +332,11 @@ POSTGRES_SCHEMA_STATEMENTS = [
         smtp_password_enc TEXT,
         from_alias TEXT,
         from_display_name TEXT,
-        cc_enabled INTEGER DEFAULT 1
+        cc_enabled INTEGER DEFAULT 1,
+        ai_context TEXT,
+        attachment_bytes BYTEA,
+        attachment_name TEXT,
+        attachment_mime TEXT
     )
     """,
 ]

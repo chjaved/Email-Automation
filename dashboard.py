@@ -17,7 +17,14 @@ from auth import create_session_token, hash_password, verify_password, verify_se
 from config import DASHBOARD_HOST, DASHBOARD_PORT, DB_PATH, FOLLOWUP_SCHEDULE, TIMEZONE
 from db import get_conn, init_db
 from send_batch import pick_emails
-from settings import get_public_settings, update_settings
+from settings import (
+    clear_attachment,
+    get_attachment,
+    get_public_settings,
+    invalidate_generated_emails,
+    set_attachment,
+    update_settings,
+)
 
 SESSION_COOKIE = "session"
 
@@ -757,6 +764,7 @@ class SettingsUpdate(BaseModel):
     from_alias: Optional[str] = None
     from_display_name: Optional[str] = None
     cc_enabled: Optional[bool] = None
+    ai_context: Optional[str] = None
 
 
 @app.get("/api/settings")
@@ -766,15 +774,72 @@ def api_get_settings(user: dict = Depends(current_user)):
 
 @app.post("/api/settings")
 def api_update_settings(body: SettingsUpdate, user: dict = Depends(current_user)):
-    update_settings(
+    ai_changed = update_settings(
         user["id"],
         smtp_user=body.smtp_user,
         smtp_password=body.smtp_password,
         from_alias=body.from_alias,
         from_display_name=body.from_display_name,
         cc_enabled=body.cc_enabled,
+        ai_context=body.ai_context,
     )
+    invalidated = 0
+    if ai_changed:
+        # Drop cached emails/followups so the next send regenerates with the
+        # new AI writing brief.
+        try:
+            invalidate_generated_emails(user["id"])
+            invalidated = 1
+        except Exception as e:
+            print(f"[settings] Failed to invalidate cached emails for user {user['id']}: {e}")
+    return {
+        "ok": True,
+        "settings": get_public_settings(user["id"]),
+        "ai_context_changed": bool(ai_changed),
+        "cache_invalidated": invalidated,
+    }
+
+
+# ---- Per-account attachment (stored in DB, survives redeploys) -----------
+_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+@app.post("/api/settings/attachment")
+async def api_upload_attachment(
+    file: UploadFile = File(...),
+    user: dict = Depends(current_user),
+):
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(data) > _MAX_ATTACHMENT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large (max {_MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB)",
+        )
+    name = (file.filename or "attachment.bin").strip() or "attachment.bin"
+    mime = (file.content_type or "application/octet-stream").strip() or "application/octet-stream"
+    set_attachment(user["id"], data, name, mime)
     return {"ok": True, "settings": get_public_settings(user["id"])}
+
+
+@app.delete("/api/settings/attachment")
+def api_delete_attachment(user: dict = Depends(current_user)):
+    clear_attachment(user["id"])
+    return {"ok": True, "settings": get_public_settings(user["id"])}
+
+
+@app.get("/api/settings/attachment")
+def api_download_attachment(user: dict = Depends(current_user)):
+    att = get_attachment(user["id"])
+    if att is None:
+        raise HTTPException(status_code=404, detail="No attachment configured")
+    data, name, mime = att
+    return Response(
+        content=data,
+        media_type=mime,
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1077,6 +1142,43 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
       <button class="btn" onclick="saveSettings()">Save settings</button>
     </div>
+
+    <div class="section">
+      <h3>AI writing context</h3>
+      <p class="hint">
+        Paste a brief that describes <em>your</em> business, offer, target audience, tone and any facts the AI should
+        stick to. The AI will study this before drafting the first email <strong>and</strong> the follow-ups for every
+        company you send to under this account. Leave blank to fall back to the built-in default pitch.
+      </p>
+      <div class="form-row">
+        <label for="setAiContext">Account brief</label>
+        <textarea id="setAiContext" rows="10" placeholder="e.g. We are Acme Recruitment, a licensed agency helping Malaysian employers hire skilled foreign workers. Tone: formal, British/Malaysian English. Key offer: zero-fee hiring for Bangladeshi workers, flat RM1,500 for other countries. Never mention pricing above these numbers. Avoid emojis." style="width:100%;font-family:inherit;font-size:14px;padding:10px;border:1px solid #d1d5db;border-radius:6px;resize:vertical;"></textarea>
+        <span class="desc">Saving a new brief clears cached AI emails for your existing leads so they get regenerated on the next send.</span>
+      </div>
+      <button class="btn" onclick="saveSettings()">Save brief</button>
+    </div>
+
+    <div class="section">
+      <h3>Email attachment</h3>
+      <p class="hint">
+        Upload a file (PDF, deck, brochure &mdash; up to 10&nbsp;MB) and it will be attached to every outbound email
+        for this account, including follow-ups. Stored securely in the database so it survives redeploys.
+      </p>
+      <div class="form-row">
+        <label>Current attachment</label>
+        <div id="attachmentStatus" class="desc">Loading&hellip;</div>
+      </div>
+      <div class="form-row">
+        <label for="setAttachmentFile">Upload / replace</label>
+        <input type="file" id="setAttachmentFile" />
+        <span class="desc">Click "Upload" after choosing a file.</span>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button class="btn" onclick="uploadAttachment()">Upload attachment</button>
+        <button class="btn" style="background:#dc2626;" onclick="deleteAttachment()" id="btnDeleteAttachment">Remove attachment</button>
+        <a class="btn" style="background:#6b7280;" href="/api/settings/attachment" target="_blank" id="btnDownloadAttachment">Download current</a>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -1119,6 +1221,22 @@ INDEX_HTML = """<!DOCTYPE html>
       if (tab === 'settings') loadSettings();
     }
 
+    function _renderAttachmentStatus(s) {
+      const box = document.getElementById('attachmentStatus');
+      const delBtn = document.getElementById('btnDeleteAttachment');
+      const dlBtn = document.getElementById('btnDownloadAttachment');
+      if (s.has_attachment) {
+        const kb = Math.max(1, Math.round((s.attachment_size || 0) / 1024));
+        box.innerHTML = 'Attached: <strong>' + (s.attachment_name || 'file') + '</strong> (' + kb + ' KB)';
+        delBtn.style.display = '';
+        dlBtn.style.display = '';
+      } else {
+        box.textContent = 'None (emails will send without an attachment unless the server default file is present).';
+        delBtn.style.display = 'none';
+        dlBtn.style.display = 'none';
+      }
+    }
+
     async function loadSettings() {
       const res = await fetch('/api/settings');
       const s = await res.json();
@@ -1126,9 +1244,11 @@ INDEX_HTML = """<!DOCTYPE html>
       document.getElementById('setFromAlias').value = s.from_alias || '';
       document.getElementById('setFromDisplayName').value = s.from_display_name || '';
       document.getElementById('setCcEnabled').checked = !!s.cc_enabled;
+      document.getElementById('setAiContext').value = s.ai_context || '';
       document.getElementById('smtpPasswordStatus').textContent = s.smtp_password_set
         ? 'A password is currently configured. Leave blank to keep it.'
         : 'Not set yet.';
+      _renderAttachmentStatus(s);
     }
 
     async function saveSettings() {
@@ -1138,6 +1258,7 @@ INDEX_HTML = """<!DOCTYPE html>
         from_alias: document.getElementById('setFromAlias').value.trim(),
         from_display_name: document.getElementById('setFromDisplayName').value.trim(),
         cc_enabled: document.getElementById('setCcEnabled').checked,
+        ai_context: document.getElementById('setAiContext').value,
       };
       try {
         const res = await fetch('/api/settings', {
@@ -1147,8 +1268,43 @@ INDEX_HTML = """<!DOCTYPE html>
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Save failed');
-        showToast('Settings saved', true);
+        let msg = 'Settings saved';
+        if (data.ai_context_changed) msg += ' - AI brief updated, cached drafts cleared';
+        showToast(msg, true);
         document.getElementById('setSmtpPassword').value = '';
+        loadSettings();
+      } catch (e) {
+        showToast(e.message, false);
+      }
+    }
+
+    async function uploadAttachment() {
+      const input = document.getElementById('setAttachmentFile');
+      if (!input.files || !input.files[0]) {
+        showToast('Choose a file first', false);
+        return;
+      }
+      const fd = new FormData();
+      fd.append('file', input.files[0]);
+      try {
+        const res = await fetch('/api/settings/attachment', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Upload failed');
+        showToast('Attachment uploaded', true);
+        input.value = '';
+        loadSettings();
+      } catch (e) {
+        showToast(e.message, false);
+      }
+    }
+
+    async function deleteAttachment() {
+      if (!confirm('Remove the current attachment? Emails will send without one until you upload a new file.')) return;
+      try {
+        const res = await fetch('/api/settings/attachment', { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Delete failed');
+        showToast('Attachment removed', true);
         loadSettings();
       } catch (e) {
         showToast(e.message, false);
