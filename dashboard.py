@@ -756,6 +756,7 @@ class SettingsUpdate(BaseModel):
     smtp_password: Optional[str] = None
     from_alias: Optional[str] = None
     from_display_name: Optional[str] = None
+    cc_enabled: Optional[bool] = None
 
 
 @app.get("/api/settings")
@@ -771,6 +772,7 @@ def api_update_settings(body: SettingsUpdate, user: dict = Depends(current_user)
         smtp_password=body.smtp_password,
         from_alias=body.from_alias,
         from_display_name=body.from_display_name,
+        cc_enabled=body.cc_enabled,
     )
     return {"ok": True, "settings": get_public_settings(user["id"])}
 
@@ -1066,6 +1068,13 @@ INDEX_HTML = """<!DOCTYPE html>
         <input type="text" id="setFromDisplayName" placeholder="e.g. AP Online Jobs" />
         <span class="desc">Shown as the sender's name in the recipient's inbox.</span>
       </div>
+      <div class="form-row">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer;">
+          <input type="checkbox" id="setCcEnabled" style="width:16px;height:16px;cursor:pointer;" />
+          Include default CC recipients on outgoing emails
+        </label>
+        <span class="desc">When enabled, every email you send will CC the addresses configured in <code>DEFAULT_CC_EMAILS</code>. Turn off if you want emails to go only to the primary recipient.</span>
+      </div>
       <button class="btn" onclick="saveSettings()">Save settings</button>
     </div>
   </div>
@@ -1116,6 +1125,7 @@ INDEX_HTML = """<!DOCTYPE html>
       document.getElementById('setSmtpUser').value = s.smtp_user || '';
       document.getElementById('setFromAlias').value = s.from_alias || '';
       document.getElementById('setFromDisplayName').value = s.from_display_name || '';
+      document.getElementById('setCcEnabled').checked = !!s.cc_enabled;
       document.getElementById('smtpPasswordStatus').textContent = s.smtp_password_set
         ? 'A password is currently configured. Leave blank to keep it.'
         : 'Not set yet.';
@@ -1127,6 +1137,7 @@ INDEX_HTML = """<!DOCTYPE html>
         smtp_password: document.getElementById('setSmtpPassword').value,
         from_alias: document.getElementById('setFromAlias').value.trim(),
         from_display_name: document.getElementById('setFromDisplayName').value.trim(),
+        cc_enabled: document.getElementById('setCcEnabled').checked,
       };
       try {
         const res = await fetch('/api/settings', {

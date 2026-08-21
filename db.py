@@ -121,7 +121,10 @@ def _add_missing_columns_sqlite(conn) -> None:
             ("is_customer", "INTEGER", "0"),
             ("gmail_message_id_header", "TEXT", "NULL"),
             ("user_id", "INTEGER", "NULL"),
-        ]
+        ],
+        "user_settings": [
+            ("cc_enabled", "INTEGER", "1"),
+        ],
     }
     for table, defs in columns.items():
         cur = conn.execute(f"PRAGMA table_info({table})")
@@ -143,7 +146,10 @@ def _add_missing_columns_postgres(conn) -> None:
             ("is_customer", "INTEGER", "0"),
             ("gmail_message_id_header", "TEXT", "NULL"),
             ("user_id", "INTEGER", "NULL"),
-        ]
+        ],
+        "user_settings": [
+            ("cc_enabled", "INTEGER", "1"),
+        ],
     }
     cur = conn.cursor()
     for table, defs in columns.items():
@@ -228,6 +234,7 @@ CREATE TABLE IF NOT EXISTS user_settings (
     smtp_password_enc TEXT,
     from_alias TEXT,
     from_display_name TEXT,
+    cc_enabled INTEGER DEFAULT 1,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 """
@@ -312,7 +319,8 @@ POSTGRES_SCHEMA_STATEMENTS = [
         smtp_user TEXT,
         smtp_password_enc TEXT,
         from_alias TEXT,
-        from_display_name TEXT
+        from_display_name TEXT,
+        cc_enabled INTEGER DEFAULT 1
     )
     """,
 ]
