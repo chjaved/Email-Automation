@@ -769,6 +769,10 @@ class SettingsUpdate(BaseModel):
     sig_email: Optional[str] = None
     sig_phone: Optional[str] = None
     sig_website: Optional[str] = None
+    auto_send_enabled: Optional[bool] = None
+    send_gap_min: Optional[int] = None
+    send_gap_max: Optional[int] = None
+    daily_send_cap: Optional[int] = None
 
 
 @app.get("/api/settings")
@@ -794,6 +798,10 @@ def api_update_settings(body: SettingsUpdate, user: dict = Depends(current_user)
         sig_email=body.sig_email,
         sig_phone=body.sig_phone,
         sig_website=body.sig_website,
+        auto_send_enabled=body.auto_send_enabled,
+        send_gap_min=body.send_gap_min,
+        send_gap_max=body.send_gap_max,
+        daily_send_cap=body.daily_send_cap,
     )
     invalidated = 0
     if ai_changed:
@@ -1226,6 +1234,38 @@ INDEX_HTML = """<!DOCTYPE html>
     </div>
 
     <div class="section">
+      <h3>Automatic sending</h3>
+      <p class="hint">
+        Enable automatic sending to have the worker daemon enrich your new leads and send emails one-by-one
+        with randomized gaps between each send. This keeps Gmail from flagging your messages as spam.
+        Industries are shuffled so you're not sending to the same sector back-to-back.
+      </p>
+      <div class="form-row">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:600;cursor:pointer;">
+          <input type="checkbox" id="setAutoSend" style="width:16px;height:16px;cursor:pointer;" />
+          Enable automatic sending
+        </label>
+        <span class="desc">When enabled, new leads are auto-enriched and scheduled for sending throughout the day. The worker daemon must be running (Railway <code>worker</code> process).</span>
+      </div>
+      <div class="form-row">
+        <label for="setSendGapMin">Minimum gap between sends (seconds)</label>
+        <input type="number" id="setSendGapMin" min="30" max="3600" placeholder="120" />
+        <span class="desc">Minimum wait between each email. Default: 120 seconds (2 minutes).</span>
+      </div>
+      <div class="form-row">
+        <label for="setSendGapMax">Maximum gap between sends (seconds)</label>
+        <input type="number" id="setSendGapMax" min="60" max="3600" placeholder="300" />
+        <span class="desc">Maximum wait between each email. Default: 300 seconds (5 minutes). The actual delay is randomized between min and max.</span>
+      </div>
+      <div class="form-row">
+        <label for="setDailySendCap">Daily send limit</label>
+        <input type="number" id="setDailySendCap" min="1" max="500" placeholder="300" />
+        <span class="desc">Maximum emails to send per 24 hours. 300-400 is safe for Gmail. Default: 300.</span>
+      </div>
+      <button class="btn" onclick="saveSettings()">Save auto-send settings</button>
+    </div>
+
+    <div class="section">
       <h3>Email attachments</h3>
       <p class="hint">
         Upload one or more files (PDF, deck, brochure &mdash; up to 10&nbsp;MB each) and they will be attached to every
@@ -1323,6 +1363,10 @@ INDEX_HTML = """<!DOCTYPE html>
       document.getElementById('setSigEmail').value = s.sig_email || '';
       document.getElementById('setSigPhone').value = s.sig_phone || '';
       document.getElementById('setSigWebsite').value = s.sig_website || '';
+      document.getElementById('setAutoSend').checked = !!s.auto_send_enabled;
+      document.getElementById('setSendGapMin').value = s.send_gap_min || 120;
+      document.getElementById('setSendGapMax').value = s.send_gap_max || 300;
+      document.getElementById('setDailySendCap').value = s.daily_send_cap || 300;
       document.getElementById('smtpPasswordStatus').textContent = s.smtp_password_set
         ? 'A password is currently configured. Leave blank to keep it.'
         : 'Not set yet.';
@@ -1345,6 +1389,10 @@ INDEX_HTML = """<!DOCTYPE html>
         sig_email: document.getElementById('setSigEmail').value,
         sig_phone: document.getElementById('setSigPhone').value,
         sig_website: document.getElementById('setSigWebsite').value,
+        auto_send_enabled: document.getElementById('setAutoSend').checked,
+        send_gap_min: parseInt(document.getElementById('setSendGapMin').value) || 120,
+        send_gap_max: parseInt(document.getElementById('setSendGapMax').value) || 300,
+        daily_send_cap: parseInt(document.getElementById('setDailySendCap').value) || 300,
       };
       try {
         const res = await fetch('/api/settings', {

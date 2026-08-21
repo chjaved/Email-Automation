@@ -136,6 +136,10 @@ def _add_missing_columns_sqlite(conn) -> None:
             ("sig_email", "TEXT", "NULL"),
             ("sig_phone", "TEXT", "NULL"),
             ("sig_website", "TEXT", "NULL"),
+            ("auto_send_enabled", "INTEGER", "0"),
+            ("send_gap_min", "INTEGER", "120"),
+            ("send_gap_max", "INTEGER", "300"),
+            ("daily_send_cap", "INTEGER", "300"),
         ],
     }
     for table, defs in columns.items():
@@ -173,6 +177,10 @@ def _add_missing_columns_postgres(conn) -> None:
             ("sig_email", "TEXT", "NULL"),
             ("sig_phone", "TEXT", "NULL"),
             ("sig_website", "TEXT", "NULL"),
+            ("auto_send_enabled", "INTEGER", "0"),
+            ("send_gap_min", "INTEGER", "120"),
+            ("send_gap_max", "INTEGER", "300"),
+            ("daily_send_cap", "INTEGER", "300"),
         ],
     }
     cur = conn.cursor()
@@ -272,6 +280,10 @@ CREATE TABLE IF NOT EXISTS user_settings (
     sig_email TEXT,
     sig_phone TEXT,
     sig_website TEXT,
+    auto_send_enabled INTEGER DEFAULT 0,
+    send_gap_min INTEGER DEFAULT 120,
+    send_gap_max INTEGER DEFAULT 300,
+    daily_send_cap INTEGER DEFAULT 300,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
@@ -382,7 +394,11 @@ POSTGRES_SCHEMA_STATEMENTS = [
         sig_company TEXT,
         sig_email TEXT,
         sig_phone TEXT,
-        sig_website TEXT
+        sig_website TEXT,
+        auto_send_enabled INTEGER DEFAULT 0,
+        send_gap_min INTEGER DEFAULT 120,
+        send_gap_max INTEGER DEFAULT 300,
+        daily_send_cap INTEGER DEFAULT 300
     )
     """,
     """

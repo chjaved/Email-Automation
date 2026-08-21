@@ -113,6 +113,32 @@ def get_signature(user_id: int) -> dict:
     }
 
 
+def get_auto_send_enabled(user_id: int) -> bool:
+    row = _get_row(user_id)
+    return bool(row["auto_send_enabled"]) if row and row["auto_send_enabled"] is not None else False
+
+
+def get_send_gap_min(user_id: int) -> int:
+    row = _get_row(user_id)
+    if row and row["send_gap_min"] is not None:
+        return int(row["send_gap_min"])
+    return 120
+
+
+def get_send_gap_max(user_id: int) -> int:
+    row = _get_row(user_id)
+    if row and row["send_gap_max"] is not None:
+        return int(row["send_gap_max"])
+    return 300
+
+
+def get_daily_send_cap(user_id: int) -> int:
+    row = _get_row(user_id)
+    if row and row["daily_send_cap"] is not None:
+        return int(row["daily_send_cap"])
+    return 300
+
+
 def get_attachment(user_id: int) -> Optional[Tuple[bytes, str, str]]:
     """Return the user's uploaded attachment as (bytes, filename, mime) or None."""
     row = _get_row(user_id)
@@ -363,6 +389,10 @@ def get_public_settings(user_id: int) -> dict:
         "sig_email": get_sig_email(user_id),
         "sig_phone": get_sig_phone(user_id),
         "sig_website": get_sig_website(user_id),
+        "auto_send_enabled": get_auto_send_enabled(user_id),
+        "send_gap_min": get_send_gap_min(user_id),
+        "send_gap_max": get_send_gap_max(user_id),
+        "daily_send_cap": get_daily_send_cap(user_id),
         "attachments": attachments,
         "has_attachment": len(attachments) > 0,
     }
@@ -384,6 +414,10 @@ def update_settings(
     sig_email: Optional[str] = None,
     sig_phone: Optional[str] = None,
     sig_website: Optional[str] = None,
+    auto_send_enabled: Optional[bool] = None,
+    send_gap_min: Optional[int] = None,
+    send_gap_max: Optional[int] = None,
+    daily_send_cap: Optional[int] = None,
 ) -> bool:
     """Upsert per-user settings. Returns True if any AI-relevant field
     (ai_context, sample_email, email_instructions) was actually changed
@@ -441,13 +475,19 @@ def update_settings(
     new_sig_phone = _new_sig(sig_phone, "sig_phone")
     new_sig_website = _new_sig(sig_website, "sig_website")
 
+    # Auto-send fields
+    new_auto_send = 1 if auto_send_enabled else 0 if auto_send_enabled is not None else (int(row["auto_send_enabled"]) if row and row["auto_send_enabled"] is not None else 0)
+    new_gap_min = send_gap_min if send_gap_min is not None else (int(row["send_gap_min"]) if row and row["send_gap_min"] is not None else 120)
+    new_gap_max = send_gap_max if send_gap_max is not None else (int(row["send_gap_max"]) if row and row["send_gap_max"] is not None else 300)
+    new_daily_cap = daily_send_cap if daily_send_cap is not None else (int(row["daily_send_cap"]) if row and row["daily_send_cap"] is not None else 300)
+
     conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO user_settings (user_id, smtp_user, smtp_password_enc, from_alias, from_display_name, cc_enabled, ai_context, sample_email, email_instructions, sig_name, sig_title, sig_company, sig_email, sig_phone, sig_website)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO user_settings (user_id, smtp_user, smtp_password_enc, from_alias, from_display_name, cc_enabled, ai_context, sample_email, email_instructions, sig_name, sig_title, sig_company, sig_email, sig_phone, sig_website, auto_send_enabled, send_gap_min, send_gap_max, daily_send_cap)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 smtp_user = excluded.smtp_user,
                 smtp_password_enc = excluded.smtp_password_enc,
@@ -462,9 +502,13 @@ def update_settings(
                 sig_company = excluded.sig_company,
                 sig_email = excluded.sig_email,
                 sig_phone = excluded.sig_phone,
-                sig_website = excluded.sig_website
+                sig_website = excluded.sig_website,
+                auto_send_enabled = excluded.auto_send_enabled,
+                send_gap_min = excluded.send_gap_min,
+                send_gap_max = excluded.send_gap_max,
+                daily_send_cap = excluded.daily_send_cap
             """,
-            (user_id, new_smtp_user, new_smtp_password_enc, new_from_alias, new_display_name, new_cc, new_ai, new_sample, new_instr, new_sig_name, new_sig_title, new_sig_company, new_sig_email, new_sig_phone, new_sig_website),
+            (user_id, new_smtp_user, new_smtp_password_enc, new_from_alias, new_display_name, new_cc, new_ai, new_sample, new_instr, new_sig_name, new_sig_title, new_sig_company, new_sig_email, new_sig_phone, new_sig_website, new_auto_send, new_gap_min, new_gap_max, new_daily_cap),
         )
         conn.commit()
     finally:

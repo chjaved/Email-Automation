@@ -8,6 +8,7 @@ import email.utils
 import html as html_lib
 import logging
 import mimetypes
+import random
 import re
 import smtplib
 import sqlite3
@@ -541,9 +542,14 @@ def _due_leads(user_id: int) -> List[sqlite3.Row]:
 
 
 def send_due(session: SMTPSession, from_email: str, user_id: int) -> int:
+    from settings import get_send_gap_min, get_send_gap_max
+
     due = _due_leads(user_id)
     if not due:
         return 0
+
+    gap_min = get_send_gap_min(user_id)
+    gap_max = get_send_gap_max(user_id)
 
     sent_count = 0
     for lead in due:
@@ -609,7 +615,11 @@ def send_due(session: SMTPSession, from_email: str, user_id: int) -> int:
         except Exception as e:
             logger.error("Send failed for lead %s: %s", lead["id"], e)
 
-    return sent_count
+        # Randomized delay between sends to avoid spam detection
+        if sent_count < len(due):
+            delay = random.randint(gap_min, gap_max)
+            logger.info("Waiting %ds before next send (user %s)", delay, user_id)
+            time.sleep(delay)
 
 
 def _should_check_inbox(user_id: int) -> bool:

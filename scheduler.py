@@ -11,6 +11,7 @@ from db import get_conn
 from followups import get_followup_body, is_final, step_to_wait_days
 from generator import generate_for_lead
 from industry_profiles import get_profile
+from settings import get_auto_send_enabled, get_daily_send_cap
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,54 @@ def build_daily_schedule(user_id: int, schedule_date: Optional[date] = None) -> 
         return 0
     conn.close()
 
+    # Auto-enrich new leads if auto_send is enabled
+    auto_send = get_auto_send_enabled(user_id)
+    if auto_send:
+        try:
+            from enricher import enrich_lead
+            import json as _json
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM leads WHERE status = 'new' AND user_id = ? ORDER BY id", (user_id,))
+            new_leads = cur.fetchall()
+            conn.close()
+            for lead in new_leads:
+                try:
+                    data = enrich_lead(lead)
+                    conn = get_conn()
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        UPDATE leads
+                        SET industry = COALESCE(NULLIF(?, ''), industry),
+                            enriched_data = ?,
+                            status = 'enriched'
+                        WHERE id = ?
+                        """,
+                        (data.get("industry", lead["industry"] or "other"), _json.dumps(data, ensure_ascii=False), lead["id"]),
+                    )
+                    conn.commit()
+                    conn.close()
+                except Exception as e:
+                    logger.warning("Auto-enrich failed for lead %s: %s", lead["id"], e)
+        except Exception as e:
+            logger.warning("Auto-enrich setup error: %s", e)
+
     logger.info("Building schedule for user %s on %s", user_id, today_iso)
+
+    # Use per-user daily cap, fall back to global DAILY_CAP
+    daily_cap = get_daily_send_cap(user_id) if auto_send else DAILY_CAP
+
+    # Count how many emails already sent today for this user
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND sent_at IS NOT NULL AND substr(sent_at, 1, 10) = ?",
+        (user_id, today_iso),
+    )
+    sent_today = cur.fetchone()["n"]
+    remaining_cap = max(0, daily_cap - sent_today)
+    conn.close()
 
     conn = get_conn()
     cur = conn.cursor()
@@ -196,7 +244,12 @@ def build_daily_schedule(user_id: int, schedule_date: Optional[date] = None) -> 
         _set_last_schedule_date(user_id, today_iso)
         return 0
 
-    selected = _select_diverse(due, DAILY_CAP)
+    if remaining_cap <= 0:
+        logger.info("Daily cap of %d already reached for user %s on %s", daily_cap, user_id, today_iso)
+        _set_last_schedule_date(user_id, today_iso)
+        return 0
+
+    selected = _select_diverse(due, min(remaining_cap, len(due)))
 
     schedule: List[Tuple[int, datetime, datetime]] = []
     for lead in selected:
