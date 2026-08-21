@@ -130,6 +130,12 @@ def _add_missing_columns_sqlite(conn) -> None:
             ("attachment_mime", "TEXT", "NULL"),
             ("sample_email", "TEXT", "NULL"),
             ("email_instructions", "TEXT", "NULL"),
+            ("sig_name", "TEXT", "NULL"),
+            ("sig_title", "TEXT", "NULL"),
+            ("sig_company", "TEXT", "NULL"),
+            ("sig_email", "TEXT", "NULL"),
+            ("sig_phone", "TEXT", "NULL"),
+            ("sig_website", "TEXT", "NULL"),
         ],
     }
     for table, defs in columns.items():
@@ -161,6 +167,12 @@ def _add_missing_columns_postgres(conn) -> None:
             ("attachment_mime", "TEXT", "NULL"),
             ("sample_email", "TEXT", "NULL"),
             ("email_instructions", "TEXT", "NULL"),
+            ("sig_name", "TEXT", "NULL"),
+            ("sig_title", "TEXT", "NULL"),
+            ("sig_company", "TEXT", "NULL"),
+            ("sig_email", "TEXT", "NULL"),
+            ("sig_phone", "TEXT", "NULL"),
+            ("sig_website", "TEXT", "NULL"),
         ],
     }
     cur = conn.cursor()
@@ -253,6 +265,12 @@ CREATE TABLE IF NOT EXISTS user_settings (
     attachment_mime TEXT,
     sample_email TEXT,
     email_instructions TEXT,
+    sig_name TEXT,
+    sig_title TEXT,
+    sig_company TEXT,
+    sig_email TEXT,
+    sig_phone TEXT,
+    sig_website TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
@@ -354,7 +372,13 @@ POSTGRES_SCHEMA_STATEMENTS = [
         attachment_name TEXT,
         attachment_mime TEXT,
         sample_email TEXT,
-        email_instructions TEXT
+        email_instructions TEXT,
+        sig_name TEXT,
+        sig_title TEXT,
+        sig_company TEXT,
+        sig_email TEXT,
+        sig_phone TEXT,
+        sig_website TEXT
     )
     """,
     """

@@ -10,6 +10,7 @@ from typing import Optional, Tuple
 
 from auth import decrypt_secret, encrypt_secret
 from config import FROM_ALIAS, FROM_DISPLAY_NAME, SMTP_PASSWORD, SMTP_USER
+from config import SIGNATURE_COMPANY, SIGNATURE_EMAIL, SIGNATURE_NAME, SIGNATURE_PHONE, SIGNATURE_TITLE, SIGNATURE_WEBSITE
 from db import get_conn
 
 
@@ -68,6 +69,48 @@ def get_email_instructions(user_id: int) -> str:
     untouched. Empty when unset."""
     row = _get_row(user_id)
     return (row["email_instructions"] if row and row["email_instructions"] else "") or ""
+
+
+def get_sig_name(user_id: int) -> str:
+    row = _get_row(user_id)
+    return ((row["sig_name"] if row and row["sig_name"] else "") or SIGNATURE_NAME).strip()
+
+
+def get_sig_title(user_id: int) -> str:
+    row = _get_row(user_id)
+    return ((row["sig_title"] if row and row["sig_title"] else "") or SIGNATURE_TITLE).strip()
+
+
+def get_sig_company(user_id: int) -> str:
+    row = _get_row(user_id)
+    return ((row["sig_company"] if row and row["sig_company"] else "") or SIGNATURE_COMPANY).strip()
+
+
+def get_sig_email(user_id: int) -> str:
+    row = _get_row(user_id)
+    return ((row["sig_email"] if row and row["sig_email"] else "") or SIGNATURE_EMAIL).strip()
+
+
+def get_sig_phone(user_id: int) -> str:
+    row = _get_row(user_id)
+    return ((row["sig_phone"] if row and row["sig_phone"] else "") or SIGNATURE_PHONE).strip()
+
+
+def get_sig_website(user_id: int) -> str:
+    row = _get_row(user_id)
+    return ((row["sig_website"] if row and row["sig_website"] else "") or SIGNATURE_WEBSITE).strip()
+
+
+def get_signature(user_id: int) -> dict:
+    """Return all signature fields as a dict for a user."""
+    return {
+        "name": get_sig_name(user_id),
+        "title": get_sig_title(user_id),
+        "company": get_sig_company(user_id),
+        "email": get_sig_email(user_id),
+        "phone": get_sig_phone(user_id),
+        "website": get_sig_website(user_id),
+    }
 
 
 def get_attachment(user_id: int) -> Optional[Tuple[bytes, str, str]]:
@@ -312,6 +355,12 @@ def get_public_settings(user_id: int) -> dict:
         "ai_context": get_ai_context(user_id),
         "sample_email": get_sample_email(user_id),
         "email_instructions": get_email_instructions(user_id),
+        "sig_name": get_sig_name(user_id),
+        "sig_title": get_sig_title(user_id),
+        "sig_company": get_sig_company(user_id),
+        "sig_email": get_sig_email(user_id),
+        "sig_phone": get_sig_phone(user_id),
+        "sig_website": get_sig_website(user_id),
         "attachments": attachments,
         "has_attachment": len(attachments) > 0,
     }
@@ -327,6 +376,12 @@ def update_settings(
     ai_context: Optional[str] = None,
     sample_email: Optional[str] = None,
     email_instructions: Optional[str] = None,
+    sig_name: Optional[str] = None,
+    sig_title: Optional[str] = None,
+    sig_company: Optional[str] = None,
+    sig_email: Optional[str] = None,
+    sig_phone: Optional[str] = None,
+    sig_website: Optional[str] = None,
 ) -> bool:
     """Upsert per-user settings. Returns True if any AI-relevant field
     (ai_context, sample_email, email_instructions) was actually changed
@@ -371,13 +426,26 @@ def update_settings(
     else:
         new_smtp_password_enc = (row["smtp_password_enc"] if row else "") or ""
 
+    # Signature fields (fall back to existing or empty)
+    def _new_sig(val, col_name):
+        if val is not None:
+            return val.strip()
+        return ((row[col_name] if row and row[col_name] else "") or "").strip()
+
+    new_sig_name = _new_sig(sig_name, "sig_name")
+    new_sig_title = _new_sig(sig_title, "sig_title")
+    new_sig_company = _new_sig(sig_company, "sig_company")
+    new_sig_email = _new_sig(sig_email, "sig_email")
+    new_sig_phone = _new_sig(sig_phone, "sig_phone")
+    new_sig_website = _new_sig(sig_website, "sig_website")
+
     conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO user_settings (user_id, smtp_user, smtp_password_enc, from_alias, from_display_name, cc_enabled, ai_context, sample_email, email_instructions)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO user_settings (user_id, smtp_user, smtp_password_enc, from_alias, from_display_name, cc_enabled, ai_context, sample_email, email_instructions, sig_name, sig_title, sig_company, sig_email, sig_phone, sig_website)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 smtp_user = excluded.smtp_user,
                 smtp_password_enc = excluded.smtp_password_enc,
@@ -386,9 +454,15 @@ def update_settings(
                 cc_enabled = excluded.cc_enabled,
                 ai_context = excluded.ai_context,
                 sample_email = excluded.sample_email,
-                email_instructions = excluded.email_instructions
+                email_instructions = excluded.email_instructions,
+                sig_name = excluded.sig_name,
+                sig_title = excluded.sig_title,
+                sig_company = excluded.sig_company,
+                sig_email = excluded.sig_email,
+                sig_phone = excluded.sig_phone,
+                sig_website = excluded.sig_website
             """,
-            (user_id, new_smtp_user, new_smtp_password_enc, new_from_alias, new_display_name, new_cc, new_ai, new_sample, new_instr),
+            (user_id, new_smtp_user, new_smtp_password_enc, new_from_alias, new_display_name, new_cc, new_ai, new_sample, new_instr, new_sig_name, new_sig_title, new_sig_company, new_sig_email, new_sig_phone, new_sig_website),
         )
         conn.commit()
     finally:

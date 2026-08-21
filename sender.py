@@ -171,9 +171,23 @@ def _paragraphs_html(text: str) -> str:
     )
 
 
-def _signature_html(logo_cid: Optional[str]) -> str:
+def _signature_html(logo_cid: Optional[str], user_id: int = 0) -> str:
+    sig = {
+        "name": SIGNATURE_NAME,
+        "title": SIGNATURE_TITLE,
+        "company": SIGNATURE_COMPANY,
+        "email": SIGNATURE_EMAIL,
+        "phone": SIGNATURE_PHONE,
+        "website": SIGNATURE_WEBSITE,
+    }
+    if user_id:
+        try:
+            from settings import get_signature
+            sig = get_signature(user_id)
+        except Exception:
+            pass
     logo_html = (
-        f"<img src='cid:{logo_cid}' alt='{html_lib.escape(SIGNATURE_COMPANY)}' "
+        f"<img src='cid:{logo_cid}' alt='{html_lib.escape(sig['company'])}' "
         f"style='max-width:200px;margin-top:10px;display:block;'>"
         if logo_cid
         else ""
@@ -181,23 +195,23 @@ def _signature_html(logo_cid: Optional[str]) -> str:
     return (
         "<p style='margin:0 0 4px;'>Kind regards,</p>"
         "<p style='margin:0 0 4px;line-height:1.5;'>"
-        f"<strong>{html_lib.escape(SIGNATURE_NAME)}</strong><br>"
-        f"{html_lib.escape(SIGNATURE_TITLE)}<br>"
-        f"{html_lib.escape(SIGNATURE_COMPANY)}<br>"
-        f"Email: <a href='mailto:{SIGNATURE_EMAIL}'>{html_lib.escape(SIGNATURE_EMAIL)}</a><br>"
-        f"Phone: {html_lib.escape(SIGNATURE_PHONE)}<br>"
-        f"Website: <a href='{SIGNATURE_WEBSITE}'>{html_lib.escape(SIGNATURE_WEBSITE)}</a>"
+        f"<strong>{html_lib.escape(sig['name'])}</strong><br>"
+        f"{html_lib.escape(sig['title'])}<br>"
+        f"{html_lib.escape(sig['company'])}<br>"
+        f"Email: <a href='mailto:{sig['email']}'>{html_lib.escape(sig['email'])}</a><br>"
+        f"Phone: {html_lib.escape(sig['phone'])}<br>"
+        f"Website: <a href='{sig['website']}'>{html_lib.escape(sig['website'])}</a>"
         "</p>"
         f"{logo_html}"
     )
 
 
-def _build_html_body(body: str) -> str:
+def _build_html_body(body: str, user_id: int = 0) -> str:
     main, signature, footer = _split_signature(body)
     parts = [_paragraphs_html(main)]
     if signature:
         logo_cid = "logo" if SIGNATURE_LOGO_PATH.exists() else None
-        parts.append(_signature_html(logo_cid))
+        parts.append(_signature_html(logo_cid, user_id))
     footer_text = re.sub(r"^-+\s*", "", footer.strip()) if footer else ""
     if footer_text:
         parts.append(
@@ -232,7 +246,7 @@ def _build_message(
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = in_reply_to
     msg.set_content(body)
-    msg.add_alternative(_build_html_body(body), subtype="html")
+    msg.add_alternative(_build_html_body(body, user_id), subtype="html")
     if SIGNATURE_LOGO_PATH.exists():
         html_part = msg.get_payload()[1]
         ctype, _ = mimetypes.guess_type(str(SIGNATURE_LOGO_PATH))

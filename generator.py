@@ -323,7 +323,32 @@ SIGNATURE = (
 UNSUBSCRIBE = "Reply 'remove' if this isn't relevant and we won't email you again."
 
 
-def _assemble_body(company_name: str, industry: str, personalisation: Dict[str, str]) -> str:
+def _build_signature(user_id: int) -> str:
+    """Build email signature from per-user settings, falling back to config."""
+    try:
+        from settings import get_signature
+        sig = get_signature(user_id)
+    except Exception:
+        sig = {
+            "name": SIGNATURE_NAME,
+            "title": SIGNATURE_TITLE,
+            "company": SIGNATURE_COMPANY,
+            "email": SIGNATURE_EMAIL,
+            "phone": SIGNATURE_PHONE,
+            "website": SIGNATURE_WEBSITE,
+        }
+    return (
+        "Kind regards,\n\n"
+        f"{sig['name']}\n"
+        f"{sig['title']}\n"
+        f"{sig['company']}\n"
+        f"Email: {sig['email']}\n"
+        f"Phone: {sig['phone']}\n"
+        f"Website: {sig['website']}"
+    )
+
+
+def _assemble_body(company_name: str, industry: str, personalisation: Dict[str, str], user_id: int = 0) -> str:
     profile = _industry_profile(industry)
     greeting = "Dear Sir/Madam,"
 
@@ -361,7 +386,7 @@ def _assemble_body(company_name: str, industry: str, personalisation: Dict[str, 
         f"arrange a short call to understand {company_name}'s requirements "
         f"and walk through the available source countries and options.\n\n"
         f"Thank you for your time.\n\n"
-        f"{SIGNATURE}\n\n"
+        f"{_build_signature(user_id)}\n\n"
         f"---\n{UNSUBSCRIBE}"
     )
 
@@ -442,24 +467,38 @@ def _generate_from_sample(
         if not body:
             body = fallback_body
 
-        # Also generate a subject line
-        subject_prompt = (
-            f"Based on this email, write a concise professional subject line (max 80 chars).\n"
-            f"Company: {company_name}\n"
-            f"Industry: {industry}\n"
-            f"Return ONLY the subject line text, nothing else.\n\n"
-            f"Email:\n{body[:800]}"
-        )
-        subject_resp = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "You write concise B2B email subject lines."},
-                {"role": "user", "content": subject_prompt},
-            ],
-            temperature=0.4,
-            max_tokens=100,
-        )
-        subject = (subject_resp.choices[0].message.content or "").strip().strip('"').strip("'")
+        # Also generate a subject line — check instructions for TITLE: prefix
+        subject = ""
+        if instructions.strip():
+            for line in instructions.strip().split("\n"):
+                line = line.strip()
+                if line.upper().startswith("TITLE:"):
+                    subject = line[6:].strip()
+                    # Replace placeholders
+                    subject = subject.replace("[Company]", company_name).replace("{company_name}", company_name)
+                    break
+        if not subject:
+            subject_prompt = (
+                f"Based on this email, write a concise professional subject line (max 80 chars).\n"
+                f"Company: {company_name}\n"
+                f"Industry: {industry}\n"
+            )
+            if instructions.strip():
+                subject_prompt += f"Instructions: {instructions.strip()[:500]}\n"
+            subject_prompt += (
+                f"Return ONLY the subject line text, nothing else.\n\n"
+                f"Email:\n{body[:800]}"
+            )
+            subject_resp = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": "You write concise B2B email subject lines."},
+                    {"role": "user", "content": subject_prompt},
+                ],
+                temperature=0.4,
+                max_tokens=100,
+            )
+            subject = (subject_resp.choices[0].message.content or "").strip().strip('"').strip("'")
         if not subject:
             subject = fallback_subject
 
@@ -514,7 +553,7 @@ def _get_or_generate(lead: sqlite3.Row) -> Dict[str, str]:
     else:
         subject = _build_subject(company_name)
         personalisation = _ai_personalisation(company_name, industry, location, enriched, ai_context)
-        body = _assemble_body(company_name, industry, personalisation)
+        body = _assemble_body(company_name, industry, personalisation, lead_user_id or 0)
 
     conn = get_conn()
     cur = conn.cursor()

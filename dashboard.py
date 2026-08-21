@@ -768,6 +768,12 @@ class SettingsUpdate(BaseModel):
     ai_context: Optional[str] = None
     sample_email: Optional[str] = None
     email_instructions: Optional[str] = None
+    sig_name: Optional[str] = None
+    sig_title: Optional[str] = None
+    sig_company: Optional[str] = None
+    sig_email: Optional[str] = None
+    sig_phone: Optional[str] = None
+    sig_website: Optional[str] = None
 
 
 @app.get("/api/settings")
@@ -787,6 +793,12 @@ def api_update_settings(body: SettingsUpdate, user: dict = Depends(current_user)
         ai_context=body.ai_context,
         sample_email=body.sample_email,
         email_instructions=body.email_instructions,
+        sig_name=body.sig_name,
+        sig_title=body.sig_title,
+        sig_company=body.sig_company,
+        sig_email=body.sig_email,
+        sig_phone=body.sig_phone,
+        sig_website=body.sig_website,
     )
     invalidated = 0
     if ai_changed:
@@ -1151,6 +1163,39 @@ INDEX_HTML = """<!DOCTYPE html>
     </div>
 
     <div class="section">
+      <h3>Email signature</h3>
+      <p class="hint">
+        These details appear at the bottom of every email and follow-up sent from this account.
+        Leave blank to use the server defaults.
+      </p>
+      <div class="form-row">
+        <label for="setSigName">Name</label>
+        <input type="text" id="setSigName" placeholder="e.g. Seelaan" />
+      </div>
+      <div class="form-row">
+        <label for="setSigTitle">Title / Position</label>
+        <input type="text" id="setSigTitle" placeholder="e.g. Director" />
+      </div>
+      <div class="form-row">
+        <label for="setSigCompany">Company</label>
+        <input type="text" id="setSigCompany" placeholder="e.g. iPros Edutech Sdn Bhd" />
+      </div>
+      <div class="form-row">
+        <label for="setSigEmail">Email</label>
+        <input type="email" id="setSigEmail" placeholder="e.g. info@yourcompany.com" />
+      </div>
+      <div class="form-row">
+        <label for="setSigPhone">Phone</label>
+        <input type="text" id="setSigPhone" placeholder="e.g. +6014 3284126" />
+      </div>
+      <div class="form-row">
+        <label for="setSigWebsite">Website</label>
+        <input type="text" id="setSigWebsite" placeholder="e.g. www.yourcompany.com" />
+      </div>
+      <button class="btn" onclick="saveSettings()">Save signature</button>
+    </div>
+
+    <div class="section">
       <h3>AI writing context</h3>
       <p class="hint">
         Paste a brief that describes <em>your</em> business, offer, target audience, tone and any facts the AI should
@@ -1277,6 +1322,12 @@ INDEX_HTML = """<!DOCTYPE html>
       document.getElementById('setAiContext').value = s.ai_context || '';
       document.getElementById('setSampleEmail').value = s.sample_email || '';
       document.getElementById('setEmailInstructions').value = s.email_instructions || '';
+      document.getElementById('setSigName').value = s.sig_name || '';
+      document.getElementById('setSigTitle').value = s.sig_title || '';
+      document.getElementById('setSigCompany').value = s.sig_company || '';
+      document.getElementById('setSigEmail').value = s.sig_email || '';
+      document.getElementById('setSigPhone').value = s.sig_phone || '';
+      document.getElementById('setSigWebsite').value = s.sig_website || '';
       document.getElementById('smtpPasswordStatus').textContent = s.smtp_password_set
         ? 'A password is currently configured. Leave blank to keep it.'
         : 'Not set yet.';
@@ -1293,6 +1344,12 @@ INDEX_HTML = """<!DOCTYPE html>
         ai_context: document.getElementById('setAiContext').value,
         sample_email: document.getElementById('setSampleEmail').value,
         email_instructions: document.getElementById('setEmailInstructions').value,
+        sig_name: document.getElementById('setSigName').value,
+        sig_title: document.getElementById('setSigTitle').value,
+        sig_company: document.getElementById('setSigCompany').value,
+        sig_email: document.getElementById('setSigEmail').value,
+        sig_phone: document.getElementById('setSigPhone').value,
+        sig_website: document.getElementById('setSigWebsite').value,
       };
       try {
         const res = await fetch('/api/settings', {

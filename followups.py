@@ -90,15 +90,35 @@ def _call_openai(prompt: str, temperature: float = 0.7) -> str:
         raise
 
 
-def _signature() -> str:
+def _signature(lead: sqlite3.Row = None) -> str:
+    """Build signature from per-user settings, falling back to config defaults."""
+    sig = {
+        "name": SIGNATURE_NAME,
+        "title": SIGNATURE_TITLE,
+        "company": SIGNATURE_COMPANY,
+        "email": SIGNATURE_EMAIL,
+        "phone": SIGNATURE_PHONE,
+        "website": SIGNATURE_WEBSITE,
+    }
+    if lead is not None:
+        try:
+            user_id = lead["user_id"]
+        except (KeyError, IndexError):
+            user_id = None
+        if user_id:
+            try:
+                from settings import get_signature
+                sig = get_signature(user_id)
+            except Exception:
+                pass
     return (
         "\n\nKind regards,\n\n"
-        f"{SIGNATURE_NAME}\n"
-        f"{SIGNATURE_TITLE}\n"
-        f"{SIGNATURE_COMPANY}\n"
-        f"Email: {SIGNATURE_EMAIL}\n"
-        f"Phone: {SIGNATURE_PHONE}\n"
-        f"Website: {SIGNATURE_WEBSITE}\n\n"
+        f"{sig['name']}\n"
+        f"{sig['title']}\n"
+        f"{sig['company']}\n"
+        f"Email: {sig['email']}\n"
+        f"Phone: {sig['phone']}\n"
+        f"Website: {sig['website']}\n\n"
         "---\n"
         "Reply 'remove' if this isn't relevant and we won't email you again."
     )
@@ -182,7 +202,7 @@ def _generate_step1(lead: sqlite3.Row) -> str:
         "- End with a soft question.\n"
         "Return only the body text."
     )
-    return _call_openai(prompt, temperature=0.7).strip() + _signature()
+    return _call_openai(prompt, temperature=0.7).strip() + _signature(lead)
 
 
 def _generate_step2(lead: sqlite3.Row) -> str:
@@ -207,21 +227,30 @@ def _generate_step2(lead: sqlite3.Row) -> str:
         "Return only the body text."
     )
     body = _call_openai(prompt, temperature=0.8).strip()
-    if "https://onlinejobs.my" not in body and "onlinejobs.my" not in body:
-        body += "\n\nLearn more: https://onlinejobs.my"
-    return body + _signature()
+    return body + _signature(lead)
 
 
 def _generate_step3(lead: sqlite3.Row) -> str:
     company = lead["company_name"] or "your company"
+    try:
+        user_id = lead["user_id"]
+    except (KeyError, IndexError):
+        user_id = None
+    sig_company = SIGNATURE_COMPANY
+    if user_id:
+        try:
+            from settings import get_sig_company
+            sig_company = get_sig_company(user_id)
+        except Exception:
+            pass
     body = (
         f"Hi {company} team,\n\n"
         "I completely understand if the timing isn't right. "
         "I'll close the file for now, but feel free to reply anytime if you'd like to explore how "
-        "AP ONLINE JOBS can help with hiring foreign workers.\n\n"
+        f"{sig_company} can help.\n\n"
         "All the best,"
     )
-    return body + _signature()
+    return body + _signature(lead)
 
 
 def get_followup_body(lead: sqlite3.Row, step: int) -> str:
