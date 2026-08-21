@@ -378,6 +378,98 @@ def _assemble_body(company_name: str, industry: str, personalisation: Dict[str, 
 
 
 # ---------------------------------------------------------------------------
+# Sample-based generation (user provides exact template, AI tweaks per company)
+# ---------------------------------------------------------------------------
+def _generate_from_sample(
+    lead: sqlite3.Row,
+    sample_email: str,
+    instructions: str,
+    ai_context: str,
+) -> Dict[str, str]:
+    """Generate an email by taking the user's sample template and asking the
+    AI to make only minimal per-company adjustments. Falls back to the sample
+    as-is (with company name substituted) if the OpenAI call fails."""
+    company_name = (lead["company_name"] or "your organisation").strip()
+    industry = lead["industry"] or "other"
+    location = (lead["location"] or "").strip()
+
+    fallback_body = sample_email.replace("[Company]", company_name).replace("{company_name}", company_name)
+    fallback_subject = f"Re: {company_name}"
+
+    if client is None:
+        return {"subject": fallback_subject, "body": fallback_body}
+
+    instr_block = ""
+    if instructions.strip():
+        instr_block = f"\nADDITIONAL INSTRUCTIONS:\n{instructions.strip()}\n"
+
+    context_block = ""
+    if ai_context.strip():
+        context_block = f"\nSENDER ACCOUNT BRIEF:\n{ai_context.strip()}\n"
+
+    prompt = (
+        "You are personalising an outbound B2B email for a specific recipient company.\n"
+        "Below is the EXACT email template from the sender. Your job is to make ONLY\n"
+        "the minimal changes needed to personalise it for the recipient company.\n\n"
+        f"Recipient company: {company_name}\n"
+        f"Industry: {industry}\n"
+        f"Location: {location}\n"
+        f"{context_block}"
+        f"{instr_block}"
+        "RULES:\n"
+        "- Keep the overall structure, tone, and length as close to the sample as possible.\n"
+        "- Only change what's necessary to address this specific company.\n"
+        "- Do NOT invent facts about the company that aren't in the sample or brief.\n"
+        "- Do NOT add emojis, markdown, or bullet points unless they're in the sample.\n"
+        "- If the sample has placeholders like [Company] or {company_name}, replace them.\n"
+        "- If the instructions say to change something, change ONLY that.\n"
+        "- If the instructions say to NOT touch something, leave it EXACTLY as-is.\n"
+        "- Return ONLY the final email body text (no subject line, no commentary).\n\n"
+        f"SAMPLE EMAIL TEMPLATE:\n---\n{sample_email.strip()}\n---\n"
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a professional B2B email writer. You follow templates precisely and make only requested changes."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.4,
+            max_tokens=1200,
+        )
+        body = (resp.choices[0].message.content or "").strip()
+        if not body:
+            body = fallback_body
+
+        # Also generate a subject line
+        subject_prompt = (
+            f"Based on this email, write a concise professional subject line (max 80 chars).\n"
+            f"Company: {company_name}\n"
+            f"Industry: {industry}\n"
+            f"Return ONLY the subject line text, nothing else.\n\n"
+            f"Email:\n{body[:800]}"
+        )
+        subject_resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": "You write concise B2B email subject lines."},
+                {"role": "user", "content": subject_prompt},
+            ],
+            temperature=0.4,
+            max_tokens=100,
+        )
+        subject = (subject_resp.choices[0].message.content or "").strip().strip('"').strip("'")
+        if not subject:
+            subject = fallback_subject
+
+        return {"subject": subject, "body": body}
+    except Exception as e:
+        logger.warning("Sample-based generation failed, using template as-is: %s", e)
+        return {"subject": fallback_subject, "body": fallback_body}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 def _get_or_generate(lead: sqlite3.Row) -> Dict[str, str]:
@@ -398,19 +490,31 @@ def _get_or_generate(lead: sqlite3.Row) -> Dict[str, str]:
     subject = _build_subject(company_name)
 
     ai_context = ""
+    sample_email = ""
+    email_instructions = ""
     try:
         lead_user_id = lead["user_id"]
     except (KeyError, IndexError):
         lead_user_id = None
     if lead_user_id:
         try:
-            from settings import get_ai_context
+            from settings import get_ai_context, get_sample_email, get_email_instructions
             ai_context = get_ai_context(lead_user_id)
+            sample_email = get_sample_email(lead_user_id)
+            email_instructions = get_email_instructions(lead_user_id)
         except Exception:
-            ai_context = ""
+            pass
 
-    personalisation = _ai_personalisation(company_name, industry, location, enriched, ai_context)
-    body = _assemble_body(company_name, industry, personalisation)
+    # If the user provided a sample email template, use that path (AI makes
+    # only minimal per-company tweaks per the instructions).
+    if sample_email and sample_email.strip():
+        result = _generate_from_sample(lead, sample_email, email_instructions, ai_context)
+        subject = result["subject"]
+        body = result["body"]
+    else:
+        subject = _build_subject(company_name)
+        personalisation = _ai_personalisation(company_name, industry, location, enriched, ai_context)
+        body = _assemble_body(company_name, industry, personalisation)
 
     conn = get_conn()
     cur = conn.cursor()

@@ -122,6 +122,21 @@ def _lead_ai_context(lead: sqlite3.Row) -> str:
         return ""
 
 
+def _lead_sample_and_instructions(lead: sqlite3.Row):
+    """Return (sample_email, email_instructions) for the lead's account."""
+    try:
+        user_id = lead["user_id"]
+    except (KeyError, IndexError):
+        return "", ""
+    if not user_id:
+        return "", ""
+    try:
+        from settings import get_sample_email, get_email_instructions
+        return get_sample_email(user_id) or "", get_email_instructions(user_id) or ""
+    except Exception:
+        return "", ""
+
+
 def _account_brief_block(lead: sqlite3.Row) -> str:
     ctx = _lead_ai_context(lead)
     if not ctx.strip():
@@ -133,6 +148,20 @@ def _account_brief_block(lead: sqlite3.Row) -> str:
     )
 
 
+def _sample_block(lead: sqlite3.Row) -> str:
+    sample, instr = _lead_sample_and_instructions(lead)
+    parts = []
+    if sample.strip():
+        parts.append(
+            "SAMPLE EMAIL TEMPLATE (the original email was based on this —\n"
+            "keep follow-ups consistent in tone and structure):\n"
+            f"---\n{sample.strip()[:1500]}\n---\n"
+        )
+    if instr.strip():
+        parts.append(f"FOLLOW-UP INSTRUCTIONS:\n{instr.strip()}\n")
+    return "\n".join(parts) + "\n" if parts else ""
+
+
 def _generate_step1(lead: sqlite3.Row) -> str:
     company = lead["company_name"] or "your company"
     industry = lead["industry"] or "other"
@@ -142,6 +171,7 @@ def _generate_step1(lead: sqlite3.Row) -> str:
 
     prompt = (
         f"{_account_brief_block(lead)}"
+        f"{_sample_block(lead)}"
         f"Write a very short, polite follow-up bump for {company} (industry: {industry}).\n"
         f"Original subject: {subject}\n"
         f"Original email angle: {body[:600]}\n\n"
@@ -162,6 +192,7 @@ def _generate_step2(lead: sqlite3.Row) -> str:
 
     prompt = (
         f"{_account_brief_block(lead)}"
+        f"{_sample_block(lead)}"
         f"Write a short follow-up email for {company} (industry: {industry}).\n"
         f"Company context: {enriched[:600]}\n\n"
         "This follow-up should introduce a NEW value angle from the sender "

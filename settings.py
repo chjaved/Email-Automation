@@ -56,6 +56,20 @@ def get_ai_context(user_id: int) -> str:
     return (row["ai_context"] if row and row["ai_context"] else "") or ""
 
 
+def get_sample_email(user_id: int) -> str:
+    """Exact email template the user wants the AI to follow closely, only
+    tweaking small things per company. Empty when unset."""
+    row = _get_row(user_id)
+    return (row["sample_email"] if row and row["sample_email"] else "") or ""
+
+
+def get_email_instructions(user_id: int) -> str:
+    """Per-account instructions: what to change per company, what to leave
+    untouched. Empty when unset."""
+    row = _get_row(user_id)
+    return (row["email_instructions"] if row and row["email_instructions"] else "") or ""
+
+
 def get_attachment(user_id: int) -> Optional[Tuple[bytes, str, str]]:
     """Return the user's uploaded attachment as (bytes, filename, mime) or None."""
     row = _get_row(user_id)
@@ -169,6 +183,8 @@ def get_public_settings(user_id: int) -> dict:
         "from_display_name": get_from_display_name(user_id),
         "cc_enabled": get_cc_enabled(user_id),
         "ai_context": get_ai_context(user_id),
+        "sample_email": get_sample_email(user_id),
+        "email_instructions": get_email_instructions(user_id),
         "has_attachment": attach_size > 0,
         "attachment_name": attach_name,
         "attachment_size": attach_size,
@@ -183,9 +199,12 @@ def update_settings(
     from_display_name: Optional[str] = None,
     cc_enabled: Optional[bool] = None,
     ai_context: Optional[str] = None,
+    sample_email: Optional[str] = None,
+    email_instructions: Optional[str] = None,
 ) -> bool:
-    """Upsert per-user settings. Returns True if `ai_context` was actually
-    changed (caller should then invalidate cached AI emails)."""
+    """Upsert per-user settings. Returns True if any AI-relevant field
+    (ai_context, sample_email, email_instructions) was actually changed
+    (caller should then invalidate cached AI emails)."""
     row = _get_row(user_id)
     new_smtp_user = smtp_user.strip() if smtp_user is not None else (row["smtp_user"] if row else "") or ""
     new_from_alias = from_alias.strip() if from_alias is not None else (row["from_alias"] if row else "") or ""
@@ -205,6 +224,20 @@ def update_settings(
         new_ai = ai_context.strip()
     ai_changed = new_ai != current_ai
 
+    current_sample = (row["sample_email"] if row and row["sample_email"] else "") or ""
+    if sample_email is None:
+        new_sample = current_sample
+    else:
+        new_sample = sample_email.strip()
+    sample_changed = new_sample != current_sample
+
+    current_instr = (row["email_instructions"] if row and row["email_instructions"] else "") or ""
+    if email_instructions is None:
+        new_instr = current_instr
+    else:
+        new_instr = email_instructions.strip()
+    instr_changed = new_instr != current_instr
+
     # Only overwrite the password if a new, non-empty value was provided
     # (lets the UI leave the password field blank to keep it unchanged).
     if smtp_password is not None and smtp_password.strip():
@@ -217,19 +250,21 @@ def update_settings(
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO user_settings (user_id, smtp_user, smtp_password_enc, from_alias, from_display_name, cc_enabled, ai_context)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO user_settings (user_id, smtp_user, smtp_password_enc, from_alias, from_display_name, cc_enabled, ai_context, sample_email, email_instructions)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
                 smtp_user = excluded.smtp_user,
                 smtp_password_enc = excluded.smtp_password_enc,
                 from_alias = excluded.from_alias,
                 from_display_name = excluded.from_display_name,
                 cc_enabled = excluded.cc_enabled,
-                ai_context = excluded.ai_context
+                ai_context = excluded.ai_context,
+                sample_email = excluded.sample_email,
+                email_instructions = excluded.email_instructions
             """,
-            (user_id, new_smtp_user, new_smtp_password_enc, new_from_alias, new_display_name, new_cc, new_ai),
+            (user_id, new_smtp_user, new_smtp_password_enc, new_from_alias, new_display_name, new_cc, new_ai, new_sample, new_instr),
         )
         conn.commit()
     finally:
         conn.close()
-    return ai_changed
+    return ai_changed or sample_changed or instr_changed

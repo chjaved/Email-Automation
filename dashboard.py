@@ -765,6 +765,8 @@ class SettingsUpdate(BaseModel):
     from_display_name: Optional[str] = None
     cc_enabled: Optional[bool] = None
     ai_context: Optional[str] = None
+    sample_email: Optional[str] = None
+    email_instructions: Optional[str] = None
 
 
 @app.get("/api/settings")
@@ -782,6 +784,8 @@ def api_update_settings(body: SettingsUpdate, user: dict = Depends(current_user)
         from_display_name=body.from_display_name,
         cc_enabled=body.cc_enabled,
         ai_context=body.ai_context,
+        sample_email=body.sample_email,
+        email_instructions=body.email_instructions,
     )
     invalidated = 0
     if ai_changed:
@@ -1159,6 +1163,26 @@ INDEX_HTML = """<!DOCTYPE html>
     </div>
 
     <div class="section">
+      <h3>Sample email &amp; instructions</h3>
+      <p class="hint">
+        Paste an <strong>exact email template</strong> you want the AI to follow. The AI will study it and make only
+        minimal per-company tweaks (e.g. swapping the company name, adjusting the industry reference). Use
+        <code>[Company]</code> or <code>{company_name}</code> as placeholders where the recipient's name should go.
+      </p>
+      <div class="form-row">
+        <label for="setSampleEmail">Sample email template</label>
+        <textarea id="setSampleEmail" rows="12" placeholder="Dear Sir/Madam,&#10;&#10;We are writing to [Company] regarding..." style="width:100%;font-family:inherit;font-size:14px;padding:10px;border:1px solid #d1d5db;border-radius:6px;resize:vertical;"></textarea>
+        <span class="desc">When provided, this replaces the built-in email template. The AI keeps your wording and only changes what's needed per company.</span>
+      </div>
+      <div class="form-row">
+        <label for="setEmailInstructions">Instructions (what to change / what to keep)</label>
+        <textarea id="setEmailInstructions" rows="4" placeholder="e.g. Change only the company name and the first paragraph. Do NOT touch the pricing paragraph or the signature. Keep the subject line formal." style="width:100%;font-family:inherit;font-size:14px;padding:10px;border:1px solid #d1d5db;border-radius:6px;resize:vertical;"></textarea>
+        <span class="desc">Tell the AI exactly what it may adjust and what it must leave untouched. These instructions also apply to follow-up emails.</span>
+      </div>
+      <button class="btn" onclick="saveSettings()">Save sample &amp; instructions</button>
+    </div>
+
+    <div class="section">
       <h3>Email attachment</h3>
       <p class="hint">
         Upload a file (PDF, deck, brochure &mdash; up to 10&nbsp;MB) and it will be attached to every outbound email
@@ -1245,6 +1269,8 @@ INDEX_HTML = """<!DOCTYPE html>
       document.getElementById('setFromDisplayName').value = s.from_display_name || '';
       document.getElementById('setCcEnabled').checked = !!s.cc_enabled;
       document.getElementById('setAiContext').value = s.ai_context || '';
+      document.getElementById('setSampleEmail').value = s.sample_email || '';
+      document.getElementById('setEmailInstructions').value = s.email_instructions || '';
       document.getElementById('smtpPasswordStatus').textContent = s.smtp_password_set
         ? 'A password is currently configured. Leave blank to keep it.'
         : 'Not set yet.';
@@ -1259,6 +1285,8 @@ INDEX_HTML = """<!DOCTYPE html>
         from_display_name: document.getElementById('setFromDisplayName').value.trim(),
         cc_enabled: document.getElementById('setCcEnabled').checked,
         ai_context: document.getElementById('setAiContext').value,
+        sample_email: document.getElementById('setSampleEmail').value,
+        email_instructions: document.getElementById('setEmailInstructions').value,
       };
       try {
         const res = await fetch('/api/settings', {
