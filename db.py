@@ -120,6 +120,7 @@ def _add_missing_columns_sqlite(conn) -> None:
             ("reply_snippet", "TEXT", "NULL"),
             ("is_customer", "INTEGER", "0"),
             ("gmail_message_id_header", "TEXT", "NULL"),
+            ("user_id", "INTEGER", "NULL"),
         ]
     }
     for table, defs in columns.items():
@@ -141,6 +142,7 @@ def _add_missing_columns_postgres(conn) -> None:
             ("reply_snippet", "TEXT", "NULL"),
             ("is_customer", "INTEGER", "0"),
             ("gmail_message_id_header", "TEXT", "NULL"),
+            ("user_id", "INTEGER", "NULL"),
         ]
     }
     cur = conn.cursor()
@@ -211,6 +213,23 @@ CREATE TABLE IF NOT EXISTS subject_usage (
     last_used_at TEXT,
     PRIMARY KEY (industry, angle_index)
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    is_admin INTEGER DEFAULT 0,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id INTEGER PRIMARY KEY,
+    smtp_user TEXT,
+    smtp_password_enc TEXT,
+    from_alias TEXT,
+    from_display_name TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 """
 
 POSTGRES_SCHEMA_STATEMENTS = [
@@ -276,6 +295,24 @@ POSTGRES_SCHEMA_STATEMENTS = [
         angle_index INTEGER,
         last_used_at TEXT,
         PRIMARY KEY (industry, angle_index)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        is_admin INTEGER DEFAULT 0,
+        created_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_settings (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id),
+        smtp_user TEXT,
+        smtp_password_enc TEXT,
+        from_alias TEXT,
+        from_display_name TEXT
     )
     """,
 ]

@@ -133,31 +133,36 @@ def _resolve_collisions(
     return resolved
 
 
-def build_daily_schedule(schedule_date: Optional[date] = None) -> int:
-    """Build and write today's send schedule. Returns number scheduled."""
+def build_daily_schedule(user_id: int, schedule_date: Optional[date] = None) -> int:
+    """Build and write today's send schedule for one user. Returns number scheduled."""
     tz = ZoneInfo(TIMEZONE)
     if schedule_date is None:
         schedule_date = datetime.now(tz).date()
 
     today_iso = schedule_date.isoformat()
+    state_key = f"user:{user_id}:last_schedule_date"
 
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT value FROM state WHERE key = 'last_schedule_date'")
+    cur.execute("SELECT value FROM state WHERE key = ?", (state_key,))
     row = cur.fetchone()
     if row and row["value"] == today_iso:
-        logger.info("Daily schedule for %s already built.", today_iso)
+        logger.info("Daily schedule for user %s on %s already built.", user_id, today_iso)
         conn.close()
         return 0
     conn.close()
 
-    logger.info("Building schedule for %s", today_iso)
+    logger.info("Building schedule for user %s on %s", user_id, today_iso)
 
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM leads WHERE status = 'enriched' ORDER BY id")
+    cur.execute("SELECT * FROM leads WHERE status = 'enriched' AND user_id = ? ORDER BY id", (user_id,))
     initial_leads = cur.fetchall()
-    cur.execute("SELECT * FROM leads WHERE status = 'sent' AND sequence_step BETWEEN 1 AND 3 AND last_contact_at IS NOT NULL ORDER BY id")
+    cur.execute(
+        "SELECT * FROM leads WHERE status = 'sent' AND sequence_step BETWEEN 1 AND 3 "
+        "AND last_contact_at IS NOT NULL AND user_id = ? ORDER BY id",
+        (user_id,),
+    )
     followup_leads = cur.fetchall()
     conn.close()
 
@@ -188,7 +193,7 @@ def build_daily_schedule(schedule_date: Optional[date] = None) -> int:
 
     if not due:
         logger.info("No leads are due on %s.", today_iso)
-        _set_last_schedule_date(today_iso)
+        _set_last_schedule_date(user_id, today_iso)
         return 0
 
     selected = _select_diverse(due, DAILY_CAP)
@@ -222,7 +227,7 @@ def build_daily_schedule(schedule_date: Optional[date] = None) -> int:
     scheduled_ids = [item[0] for item in resolved]
 
     if not scheduled_ids:
-        _set_last_schedule_date(today_iso)
+        _set_last_schedule_date(user_id, today_iso)
         return 0
 
     conn = get_conn()
@@ -235,17 +240,17 @@ def build_daily_schedule(schedule_date: Optional[date] = None) -> int:
     conn.commit()
     conn.close()
 
-    _set_last_schedule_date(today_iso)
-    logger.info("Scheduled %d emails for %s", len(resolved), today_iso)
+    _set_last_schedule_date(user_id, today_iso)
+    logger.info("Scheduled %d emails for user %s on %s", len(resolved), user_id, today_iso)
     return len(resolved)
 
 
-def _set_last_schedule_date(today_iso: str) -> None:
+def _set_last_schedule_date(user_id: int, today_iso: str) -> None:
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO state (key, value) VALUES ('last_schedule_date', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (today_iso,),
+        "INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (f"user:{user_id}:last_schedule_date", today_iso),
     )
     conn.commit()
     conn.close()

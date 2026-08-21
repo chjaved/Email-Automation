@@ -1,82 +1,98 @@
-"""Runtime-configurable sender settings, stored in the DB `state` table.
+"""Per-user sender settings, stored in the DB `user_settings` table.
 
-These override the corresponding .env / Railway variables at runtime,
-without requiring a redeploy. If a setting has never been configured via
-the dashboard, the .env value is used as a fallback.
+Each logged-in user configures their own SMTP account (login email + Gmail
+app password) and sender identity (alias / display name). The app password
+is encrypted at rest using `auth.encrypt_secret` (derived from SECRET_KEY).
+Falls back to the legacy global .env values only when a user has not yet
+configured anything (useful for the first admin account after migration).
 """
 from typing import Optional
 
+from auth import decrypt_secret, encrypt_secret
 from config import FROM_ALIAS, FROM_DISPLAY_NAME, SMTP_PASSWORD, SMTP_USER
 from db import get_conn
 
-_PREFIX = "setting:"
 
-# Keys exposed to the dashboard's Settings tab.
-SMTP_USER_KEY = "smtp_user"
-SMTP_PASSWORD_KEY = "smtp_password"
-FROM_ALIAS_KEY = "from_alias"
-FROM_DISPLAY_NAME_KEY = "from_display_name"
-
-
-def get_setting(key: str) -> str:
+def _get_row(user_id: int):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT value FROM state WHERE key = ?", (_PREFIX + key,))
-    row = cur.fetchone()
-    conn.close()
-    return (row["value"] or "") if row else ""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM user_settings WHERE user_id = ?", (user_id,))
+        return cur.fetchone()
+    finally:
+        conn.close()
 
 
-def set_setting(key: str, value: str) -> None:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (_PREFIX + key, value or ""),
-    )
-    conn.commit()
-    conn.close()
+def get_smtp_user(user_id: int) -> str:
+    row = _get_row(user_id)
+    val = (row["smtp_user"] if row else "") or ""
+    return (val or SMTP_USER).strip()
 
 
-def get_smtp_user() -> str:
-    return (get_setting(SMTP_USER_KEY) or SMTP_USER).strip()
+def get_smtp_password(user_id: int) -> str:
+    row = _get_row(user_id)
+    enc = (row["smtp_password_enc"] if row else "") or ""
+    val = decrypt_secret(enc) if enc else ""
+    return (val or SMTP_PASSWORD).strip()
 
 
-def get_smtp_password() -> str:
-    return (get_setting(SMTP_PASSWORD_KEY) or SMTP_PASSWORD).strip()
+def get_from_alias(user_id: int) -> str:
+    row = _get_row(user_id)
+    val = (row["from_alias"] if row else "") or ""
+    return (val or FROM_ALIAS).strip()
 
 
-def get_from_alias() -> str:
-    return (get_setting(FROM_ALIAS_KEY) or FROM_ALIAS).strip()
+def get_from_display_name(user_id: int) -> str:
+    row = _get_row(user_id)
+    val = (row["from_display_name"] if row else "") or ""
+    return (val or FROM_DISPLAY_NAME).strip()
 
 
-def get_from_display_name() -> str:
-    return (get_setting(FROM_DISPLAY_NAME_KEY) or FROM_DISPLAY_NAME).strip()
-
-
-def get_public_settings() -> dict:
+def get_public_settings(user_id: int) -> dict:
     """Settings safe to return to the dashboard (never expose the raw password)."""
     return {
-        "smtp_user": get_smtp_user(),
-        "smtp_password_set": bool(get_smtp_password()),
-        "from_alias": get_from_alias(),
-        "from_display_name": get_from_display_name(),
+        "smtp_user": get_smtp_user(user_id),
+        "smtp_password_set": bool(get_smtp_password(user_id)),
+        "from_alias": get_from_alias(user_id),
+        "from_display_name": get_from_display_name(user_id),
     }
 
 
 def update_settings(
+    user_id: int,
     smtp_user: Optional[str] = None,
     smtp_password: Optional[str] = None,
     from_alias: Optional[str] = None,
     from_display_name: Optional[str] = None,
 ) -> None:
-    if smtp_user is not None:
-        set_setting(SMTP_USER_KEY, smtp_user.strip())
+    row = _get_row(user_id)
+    new_smtp_user = smtp_user.strip() if smtp_user is not None else (row["smtp_user"] if row else "") or ""
+    new_from_alias = from_alias.strip() if from_alias is not None else (row["from_alias"] if row else "") or ""
+    new_display_name = (
+        from_display_name.strip() if from_display_name is not None else (row["from_display_name"] if row else "") or ""
+    )
+    # Only overwrite the password if a new, non-empty value was provided
+    # (lets the UI leave the password field blank to keep it unchanged).
     if smtp_password is not None and smtp_password.strip():
-        # Only overwrite if a new, non-empty value was actually provided
-        # (lets the UI leave the password field blank to keep it unchanged).
-        set_setting(SMTP_PASSWORD_KEY, smtp_password.strip())
-    if from_alias is not None:
-        set_setting(FROM_ALIAS_KEY, from_alias.strip())
-    if from_display_name is not None:
-        set_setting(FROM_DISPLAY_NAME_KEY, from_display_name.strip())
+        new_smtp_password_enc = encrypt_secret(smtp_password.strip())
+    else:
+        new_smtp_password_enc = (row["smtp_password_enc"] if row else "") or ""
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO user_settings (user_id, smtp_user, smtp_password_enc, from_alias, from_display_name)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                smtp_user = excluded.smtp_user,
+                smtp_password_enc = excluded.smtp_password_enc,
+                from_alias = excluded.from_alias,
+                from_display_name = excluded.from_display_name
+            """,
+            (user_id, new_smtp_user, new_smtp_password_enc, new_from_alias, new_display_name),
+        )
+        conn.commit()
+    finally:
+        conn.close()

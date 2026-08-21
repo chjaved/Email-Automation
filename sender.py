@@ -60,14 +60,15 @@ REMOVE_KEYWORDS = [
 # SMTP session
 # ---------------------------------------------------------------------------
 class SMTPSession:
-    """Thin wrapper around smtplib for a single SMTP session."""
+    """Thin wrapper around smtplib for a single SMTP session, scoped to one user's credentials."""
 
-    def __init__(self) -> None:
-        self.user = get_smtp_user()
-        self.password = get_smtp_password()
+    def __init__(self, user_id: int) -> None:
+        self.user_id = user_id
+        self.user = get_smtp_user(user_id)
+        self.password = get_smtp_password(user_id)
         if not self.user or not self.password:
             raise RuntimeError(
-                "SMTP_USER / SMTP_PASSWORD not configured. Set them in .env or the dashboard's Settings tab."
+                "SMTP_USER / SMTP_PASSWORD not configured. Set them in the dashboard's Settings tab."
             )
         self.host = SMTP_HOST
         self.port = SMTP_PORT
@@ -94,23 +95,23 @@ class SMTPSession:
         self._smtp.send_message(msg, from_addr=from_addr, to_addrs=to_addrs)
 
 
-def get_from_address() -> str:
+def get_from_address(user_id: int) -> str:
     """Return the address to use as the visible `From:` header."""
-    return (get_from_alias() or get_smtp_user()).strip()
+    return (get_from_alias(user_id) or get_smtp_user(user_id)).strip()
 
 
-def verify_sender() -> str:
+def verify_sender(user_id: int) -> str:
     """Best-effort validation that SMTP credentials + alias are usable."""
-    from_addr = get_from_address()
+    from_addr = get_from_address(user_id)
     if not from_addr:
         raise RuntimeError("No FROM_ALIAS or SMTP_USER configured")
-    if not get_smtp_user() or not get_smtp_password():
+    if not get_smtp_user(user_id) or not get_smtp_password(user_id):
         raise RuntimeError(
-            "SMTP_USER / SMTP_PASSWORD missing. Set them in .env or the dashboard's Settings tab."
+            "SMTP_USER / SMTP_PASSWORD missing. Set them in the dashboard's Settings tab."
         )
-    with SMTPSession():
+    with SMTPSession(user_id):
         pass
-    logger.info("SMTP login OK for %s; sending as %s", get_smtp_user(), from_addr)
+    logger.info("SMTP login OK for %s; sending as %s", get_smtp_user(user_id), from_addr)
     return from_addr
 
 
@@ -198,11 +199,12 @@ def _build_message(
     from_addr: str,
     subject: str,
     body: str,
+    user_id: int,
     in_reply_to: str = "",
     cc: Optional[List[str]] = None,
 ) -> EmailMessage:
     msg = EmailMessage()
-    display = get_from_display_name() or "AP Online Jobs"
+    display = get_from_display_name(user_id) or "AP Online Jobs"
     msg["From"] = email.utils.formataddr((display, from_addr))
     msg["To"] = to
     if cc:
@@ -244,6 +246,7 @@ def send_message(
     session: SMTPSession,
     lead: sqlite3.Row,
     from_email: str,
+    user_id: int,
     step: int = 0,
     in_reply_to: str = "",
     thread_id: str = "",
@@ -258,7 +261,7 @@ def send_message(
             subject = f"Re: {subject}"
         body = get_followup_body(lead, step)
 
-    msg = _build_message(to, from_email, subject, body, in_reply_to=in_reply_to, cc=DEFAULT_CC_EMAILS)
+    msg = _build_message(to, from_email, subject, body, user_id, in_reply_to=in_reply_to, cc=DEFAULT_CC_EMAILS)
 
     try:
         session.send(from_addr=from_email, to_addrs=[to] + DEFAULT_CC_EMAILS, msg=msg)
@@ -296,6 +299,10 @@ def set_lead_status(lead_id: int, status: str, **fields: Any) -> None:
     conn.close()
 
 
+def _state_key(user_id: int, key: str) -> str:
+    return f"user:{user_id}:{key}"
+
+
 def _get_state(key: str) -> Optional[str]:
     conn = get_conn()
     try:
@@ -320,26 +327,26 @@ def _set_state(key: str, value: str) -> None:
         conn.close()
 
 
-def is_paused() -> bool:
-    return _get_state("paused") == "1"
+def is_paused(user_id: int) -> bool:
+    return _get_state(_state_key(user_id, "paused")) == "1"
 
 
-def pause_campaign(reason: str) -> None:
-    logger.warning("CAMPAIGN PAUSED: %s", reason)
-    _set_state("paused", "1")
+def pause_campaign(user_id: int, reason: str) -> None:
+    logger.warning("CAMPAIGN PAUSED for user %s: %s", user_id, reason)
+    _set_state(_state_key(user_id, "paused"), "1")
 
 
-def reset_pause() -> None:
-    _set_state("paused", "0")
+def reset_pause(user_id: int) -> None:
+    _set_state(_state_key(user_id, "paused"), "0")
 
 
-def _trailing_bounce_rate() -> float:
+def _trailing_bounce_rate(user_id: int) -> float:
     conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT status FROM leads WHERE sent_at IS NOT NULL ORDER BY sent_at DESC LIMIT ?",
-            (BOUNCE_RATE_WINDOW,),
+            "SELECT status FROM leads WHERE sent_at IS NOT NULL AND user_id = ? ORDER BY sent_at DESC LIMIT ?",
+            (user_id, BOUNCE_RATE_WINDOW),
         )
         rows = cur.fetchall()
     finally:
@@ -350,13 +357,14 @@ def _trailing_bounce_rate() -> float:
     return bounces / len(rows)
 
 
-def check_bounce_rate_safety() -> bool:
-    rate = _trailing_bounce_rate()
-    logger.info("Trailing bounce rate: %.2f%%", rate * 100)
+def check_bounce_rate_safety(user_id: int) -> bool:
+    rate = _trailing_bounce_rate(user_id)
+    logger.info("Trailing bounce rate for user %s: %.2f%%", user_id, rate * 100)
     if rate > BOUNCE_PAUSE_THRESHOLD:
         pause_campaign(
+            user_id,
             f"Bounce rate over last {BOUNCE_RATE_WINDOW} sends is {rate:.2%}, "
-            f"exceeding {BOUNCE_PAUSE_THRESHOLD:.2%}."
+            f"exceeding {BOUNCE_PAUSE_THRESHOLD:.2%}.",
         )
         return False
     return True
@@ -365,7 +373,7 @@ def check_bounce_rate_safety() -> bool:
 # ---------------------------------------------------------------------------
 # IMAP bounce/reply detection
 # ---------------------------------------------------------------------------
-def _fetch_recent_inbox_messages(days: int = 7) -> List[Dict[str, Any]]:
+def _fetch_recent_inbox_messages(user_id: int, days: int = 7) -> List[Dict[str, Any]]:
     """Return a list of {"from": str, "subject": str, "body": str} dicts from
     the last `days` days. Uses IMAP with the same SMTP credentials.
     Returns an empty list on any failure (bounce detection is best-effort)."""
@@ -374,7 +382,7 @@ def _fetch_recent_inbox_messages(days: int = 7) -> List[Dict[str, Any]]:
 
     try:
         imap = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
-        imap.login(get_smtp_user(), get_smtp_password())
+        imap.login(get_smtp_user(user_id), get_smtp_password(user_id))
         imap.select("INBOX", readonly=True)
         since_date = (datetime.now() - _timedelta(days=days)).strftime("%d-%b-%Y")
         typ, data = imap.search(None, f'(SINCE "{since_date}")')
@@ -421,17 +429,18 @@ def _timedelta(days: int):
     return timedelta(days=days)
 
 
-def detect_bounces_and_replies(from_email: str) -> None:
+def detect_bounces_and_replies(user_id: int, from_email: str) -> None:
     """Very lightweight inbox scan: mark leads as bounced/replied/unsubscribed."""
-    messages = _fetch_recent_inbox_messages(days=7)
+    messages = _fetch_recent_inbox_messages(user_id, days=7)
     if not messages:
         return
 
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, email, status FROM leads WHERE sent_at IS NOT NULL "
-        "AND status NOT IN ('replied','unsubscribed','bounced')"
+        "SELECT id, email, status FROM leads WHERE sent_at IS NOT NULL AND user_id = ? "
+        "AND status NOT IN ('replied','unsubscribed','bounced')",
+        (user_id,),
     )
     sent_leads = {row["email"].lower(): row["id"] for row in cur.fetchall()}
     conn.close()
@@ -447,7 +456,7 @@ def detect_bounces_and_replies(from_email: str) -> None:
                 r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", m["body"]
             )
             for addr in found:
-                if addr.lower() == from_email_lower or addr.lower() == get_smtp_user().lower():
+                if addr.lower() == from_email_lower or addr.lower() == get_smtp_user(user_id).lower():
                     continue
                 lead_id = sent_leads.get(addr.lower())
                 if lead_id:
@@ -485,28 +494,28 @@ def detect_bounces_and_replies(from_email: str) -> None:
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
-def _due_leads() -> List[sqlite3.Row]:
+def _due_leads(user_id: int) -> List[sqlite3.Row]:
     now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         "SELECT * FROM leads WHERE status = 'scheduled' AND scheduled_at IS NOT NULL "
-        "AND scheduled_at <= ? ORDER BY scheduled_at",
-        (now,),
+        "AND scheduled_at <= ? AND user_id = ? ORDER BY scheduled_at",
+        (now, user_id),
     )
     rows = cur.fetchall()
     conn.close()
     return rows
 
 
-def send_due(session: SMTPSession, from_email: str) -> int:
-    due = _due_leads()
+def send_due(session: SMTPSession, from_email: str, user_id: int) -> int:
+    due = _due_leads(user_id)
     if not due:
         return 0
 
     sent_count = 0
     for lead in due:
-        if is_paused():
+        if is_paused(user_id):
             logger.warning("Campaign is paused; stopping send loop.")
             return sent_count
 
@@ -518,7 +527,7 @@ def send_due(session: SMTPSession, from_email: str) -> int:
         if is_final(lead["status"]):
             continue
 
-        if not check_bounce_rate_safety():
+        if not check_bounce_rate_safety(user_id):
             return sent_count
 
         step = lead["sequence_step"] or 0
@@ -530,6 +539,7 @@ def send_due(session: SMTPSession, from_email: str) -> int:
                 session,
                 lead,
                 from_email,
+                user_id,
                 step=step,
                 in_reply_to=in_reply_to,
                 thread_id=thread_id,
@@ -570,8 +580,8 @@ def send_due(session: SMTPSession, from_email: str) -> int:
     return sent_count
 
 
-def _should_check_inbox() -> bool:
-    last = _get_state("last_inbox_check")
+def _should_check_inbox(user_id: int) -> bool:
+    last = _get_state(_state_key(user_id, "last_inbox_check"))
     if not last:
         return True
     try:
@@ -581,38 +591,58 @@ def _should_check_inbox() -> bool:
         return True
 
 
-def _check_inbox(from_email: str) -> None:
-    detect_bounces_and_replies(from_email)
-    _set_state("last_inbox_check", datetime.now(ZoneInfo(TIMEZONE)).isoformat())
+def _check_inbox(user_id: int, from_email: str) -> None:
+    detect_bounces_and_replies(user_id, from_email)
+    _set_state(_state_key(user_id, "last_inbox_check"), datetime.now(ZoneInfo(TIMEZONE)).isoformat())
+
+
+def _all_user_ids() -> List[int]:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users ORDER BY id")
+        return [row["id"] for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _run_cycle_for_user(user_id: int) -> None:
+    """One send + inbox-check pass for a single user's campaign."""
+    if is_paused(user_id):
+        return
+
+    try:
+        from_email = verify_sender(user_id)
+    except Exception as e:
+        logger.debug("User %s not ready to send (%s); skipping this cycle.", user_id, e)
+        return
+
+    build_daily_schedule(user_id)
+
+    due = _due_leads(user_id)
+    if due:
+        try:
+            with SMTPSession(user_id) as session:
+                send_due(session, from_email, user_id)
+        except Exception as e:
+            logger.error("Send cycle failed for user %s: %s", user_id, e)
+
+    if _should_check_inbox(user_id):
+        try:
+            _check_inbox(user_id, from_email)
+        except Exception as e:
+            logger.warning("Inbox check failed for user %s: %s", user_id, e)
 
 
 def run_sender_loop() -> None:
-    logger.info("Starting SMTP sender daemon")
-
-    if is_paused():
-        logger.warning(
-            "Campaign is currently paused. Use `python main.py reset-pause` to resume."
-        )
-        return
-
-    from_email = verify_sender()
-    logger.info("Sending as %s", from_email)
+    """Multi-tenant daemon: each cycle, loops over every registered user and
+    sends/checks their own due leads using their own SMTP credentials."""
+    logger.info("Starting SMTP sender daemon (multi-tenant)")
 
     try:
-        while not is_paused():
-            build_daily_schedule()
-
-            due = _due_leads()
-            if due:
-                with SMTPSession() as session:
-                    send_due(session, from_email)
-
-            if _should_check_inbox():
-                _check_inbox(from_email)
-
-            if is_paused():
-                logger.warning("Campaign paused during loop")
-                break
+        while True:
+            for user_id in _all_user_ids():
+                _run_cycle_for_user(user_id)
 
             time.sleep(SEND_INTERVAL_SECONDS)
     except KeyboardInterrupt:
@@ -622,15 +652,16 @@ def run_sender_loop() -> None:
 # ---------------------------------------------------------------------------
 # Single-lead send (used by the dashboard "Send now" button)
 # ---------------------------------------------------------------------------
-def send_lead_now(lead_id: int) -> Dict[str, Any]:
+def send_lead_now(lead_id: int, user_id: int) -> Dict[str, Any]:
     """Immediately send the next due email (initial or follow-up) for one lead.
 
     Bypasses the schedule/window but still respects do-not-email, final
     statuses, and updates lead state the same way the normal send loop does.
+    Also enforces ownership: raises ValueError if the lead doesn't belong to `user_id`.
     """
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM leads WHERE id = ?", (lead_id,))
+    cur.execute("SELECT * FROM leads WHERE id = ? AND user_id = ?", (lead_id, user_id))
     lead = cur.fetchone()
     conn.close()
 
@@ -644,16 +675,17 @@ def send_lead_now(lead_id: int) -> Dict[str, Any]:
     if is_final(lead["status"]):
         raise ValueError(f"Lead {lead_id} is already in a final state: {lead['status']}")
 
-    from_email = verify_sender()
+    from_email = verify_sender(user_id)
     step = lead["sequence_step"] or 0
     in_reply_to = lead["gmail_message_id_header"] or ""
     thread_id = lead["gmail_thread_id"] or ""
 
-    with SMTPSession() as session:
+    with SMTPSession(user_id) as session:
         result = send_message(
             session,
             lead,
             from_email,
+            user_id,
             step=step,
             in_reply_to=in_reply_to,
             thread_id=thread_id,
@@ -701,10 +733,10 @@ def send_lead_now(lead_id: int) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # One-off test-send helper (used by CLI: `python main.py test-send <email>`)
 # ---------------------------------------------------------------------------
-def send_test_email(to_address: str, company_name: str = "Test Company",
+def send_test_email(to_address: str, user_id: int, company_name: str = "Test Company",
                     industry: str = "cleaning") -> Dict[str, str]:
     """Generate a preview email using the current template and send it directly."""
-    from_email = verify_sender()
+    from_email = verify_sender(user_id)
 
     # Build a synthetic lead-like row without touching the DB
     class _Row(dict):
@@ -728,8 +760,8 @@ def send_test_email(to_address: str, company_name: str = "Test Company",
     personalisation = _ai_personalisation(company_name, norm_industry, "Malaysia", {})
     body = _assemble_body(company_name, norm_industry, personalisation)
 
-    msg = _build_message(to_address, from_email, subject, body)
-    with SMTPSession() as session:
+    msg = _build_message(to_address, from_email, subject, body, user_id)
+    with SMTPSession(user_id) as session:
         session.send(from_addr=from_email, to_addrs=[to_address], msg=msg)
     logger.info("Test email sent from %s to %s", from_email, to_address)
     return {"subject": subject, "body": body, "from": from_email, "to": to_address}

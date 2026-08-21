@@ -1,6 +1,7 @@
 """Campaign Engine configuration."""
 import logging
 import os
+import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -8,6 +9,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
+
+# Used to sign login session cookies and to encrypt per-user SMTP app
+# passwords at rest. MUST be set to a fixed value in production (Railway
+# Variables on both the web and worker services) - if it changes, all
+# existing sessions are invalidated and stored SMTP passwords become
+# undecryptable. A random one is generated for local/dev convenience only.
+SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
+if not SECRET_KEY:
+    SECRET_KEY = secrets.token_hex(32)
+    logging.getLogger(__name__).warning(
+        "SECRET_KEY not set - using a random, non-persistent key. "
+        "Set SECRET_KEY in your environment for production so sessions and "
+        "encrypted SMTP passwords survive restarts/redeploys."
+    )
 
 DB_PATH = BASE_DIR / "campaign.db"
 LOG_PATH = BASE_DIR / "campaign.log"

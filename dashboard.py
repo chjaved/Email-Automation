@@ -7,15 +7,19 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from datetime import datetime as _dt
+from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
+from auth import create_session_token, hash_password, verify_password, verify_session_token
 from config import DASHBOARD_HOST, DASHBOARD_PORT, DB_PATH, FOLLOWUP_SCHEDULE, TIMEZONE
 from db import get_conn, init_db
 from send_batch import pick_emails
 from settings import get_public_settings, update_settings
+
+SESSION_COOKIE = "session"
 
 init_db()
 
@@ -26,6 +30,100 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+def _get_user(user_id: int) -> Optional[dict]:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, email, is_admin FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def _get_user_by_email(email: str) -> Optional[dict]:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, email, password_hash, is_admin FROM users WHERE email = ?", (email.lower().strip(),))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def _count_users() -> int:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) AS n FROM users")
+        return cur.fetchone()["n"]
+    finally:
+        conn.close()
+
+
+def _create_user(email: str, password: str) -> dict:
+    """Create a new user. First user to sign up becomes admin and inherits
+    any legacy leads with user_id IS NULL."""
+    email = email.lower().strip()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="A valid email is required")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if _get_user_by_email(email):
+        raise HTTPException(status_code=400, detail="An account with that email already exists")
+
+    is_first = _count_users() == 0
+    now = _dt.utcnow().isoformat()
+    pwd_hash = hash_password(password)
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        from db import insert_returning_id
+
+        new_id = insert_returning_id(
+            cur,
+            "INSERT INTO users (email, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?)",
+            (email, pwd_hash, 1 if is_first else 0, now),
+        )
+        if is_first:
+            # Assign every orphan lead to the first admin.
+            cur.execute("UPDATE leads SET user_id = ? WHERE user_id IS NULL", (new_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"id": new_id, "email": email, "is_admin": 1 if is_first else 0}
+
+
+def current_user(session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE)) -> dict:
+    """FastAPI dependency: returns the logged-in user or raises 401."""
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    uid = verify_session_token(session)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Session expired or invalid")
+    user = _get_user(uid)
+    if not user:
+        raise HTTPException(status_code=401, detail="User no longer exists")
+    return user
+
+
+def optional_current_user(session: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE)) -> Optional[dict]:
+    """Same as `current_user` but returns None instead of raising when
+    not authenticated (used by the `/` route to decide login-page vs dashboard)."""
+    if not session:
+        return None
+    uid = verify_session_token(session)
+    if uid is None:
+        return None
+    return _get_user(uid)
 
 
 def _lead_filters(industry: Optional[str], start: Optional[str], end: Optional[str], date_col: str = "sent_at") -> tuple:
@@ -45,26 +143,77 @@ def _where_clause(where: List[str]) -> str:
     return f"WHERE {' AND '.join(where)}" if where else ""
 
 
+class SignupBody(BaseModel):
+    email: str
+    password: str
+
+
+class LoginBody(BaseModel):
+    email: str
+    password: str
+
+
+def _set_session_cookie(response: Response, user_id: int) -> None:
+    token = create_session_token(user_id)
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=30 * 24 * 60 * 60,
+        httponly=True,
+        samesite="lax",
+        secure=False,  # set True behind HTTPS-terminating proxy (Railway does this)
+        path="/",
+    )
+
+
+@app.post("/api/signup")
+def api_signup(body: SignupBody, response: Response):
+    user = _create_user(body.email, body.password)
+    _set_session_cookie(response, user["id"])
+    return {"ok": True, "user": {"id": user["id"], "email": user["email"], "is_admin": bool(user["is_admin"])}}
+
+
+@app.post("/api/login")
+def api_login(body: LoginBody, response: Response):
+    user = _get_user_by_email(body.email)
+    if not user or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    _set_session_cookie(response, user["id"])
+    return {"ok": True, "user": {"id": user["id"], "email": user["email"], "is_admin": bool(user["is_admin"])}}
+
+
+@app.post("/api/logout")
+def api_logout(response: Response):
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def api_me(user: dict = Depends(current_user)):
+    return {"id": user["id"], "email": user["email"], "is_admin": bool(user["is_admin"])}
+
+
 @app.get("/api/data")
 def api_data(
     industry: Optional[str] = Query(None),
     start: Optional[str] = Query(None),
     end: Optional[str] = Query(None),
+    user: dict = Depends(current_user),
 ):
     conn = get_conn()
     try:
-        return _api_data_impl(conn, industry, start, end)
+        return _api_data_impl(conn, industry, start, end, user["id"])
     finally:
         conn.close()
 
 
-def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Optional[str]) -> dict:
+def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Optional[str], user_id: int) -> dict:
     cur = conn.cursor()
 
     # Stats
     where, params = _lead_filters(industry, start, end)
-    ind_where: List[str] = []
-    ind_params: List[Any] = []
+    ind_where: List[str] = ["user_id = ?"]
+    ind_params: List[Any] = [user_id]
     if industry:
         ind_where.append("industry = ?")
         ind_params.append(industry.lower())
@@ -73,6 +222,8 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
     # Total sends (any sent_at)
     where2, params2 = _lead_filters(industry, start, end, "sent_at")
     where2.append("sent_at IS NOT NULL")
+    where2.append("user_id = ?")
+    params2.append(user_id)
     sent = cur.execute(f"SELECT COUNT(*) AS n FROM leads {_where_clause(where2)}", params2).fetchone()["n"]
 
     bounces = cur.execute(
@@ -95,8 +246,8 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
 
     # Trend: sends per day last 30 days
     since = (datetime.now() - timedelta(days=30)).isoformat()
-    trend_where = ["sent_at >= ?"]
-    trend_params: List[Any] = [since]
+    trend_where = ["sent_at >= ?", "user_id = ?"]
+    trend_params: List[Any] = [since, user_id]
     if industry:
         trend_where.append("industry = ?")
         trend_params.append(industry.lower())
@@ -107,9 +258,14 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
     trend = [{"day": row["day"], "count": row["n"]} for row in cur.fetchall()]
 
     # Replies by industry
+    ir_params: List[Any] = [user_id]
+    ir_extra = ""
+    if industry:
+        ir_extra = "AND industry = ?"
+        ir_params.append(industry.lower())
     cur.execute(
-        f"SELECT COALESCE(NULLIF(industry, ''), 'other') AS industry, COUNT(*) AS n FROM leads WHERE status = 'replied' {('AND industry = ?' if industry else '')} GROUP BY industry ORDER BY n DESC",
-        ([industry.lower()] if industry else []),
+        f"SELECT COALESCE(NULLIF(industry, ''), 'other') AS industry, COUNT(*) AS n FROM leads WHERE status = 'replied' AND user_id = ? {ir_extra} GROUP BY industry ORDER BY n DESC",
+        ir_params,
     )
     industry_replies = [{"industry": row["industry"], "count": row["n"]} for row in cur.fetchall()]
 
@@ -139,8 +295,8 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
     sequence.sort(key=lambda x: x["step"])
 
     # Recent activity
-    activity_where = []
-    activity_params: List[Any] = []
+    activity_where = ["l.user_id = ?"]
+    activity_params: List[Any] = [user_id]
     if industry:
         activity_where.append("l.industry = ?")
         activity_params.append(industry.lower())
@@ -159,8 +315,8 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
     activity = [dict(row) for row in cur.fetchall()]
 
     # Replies inbox
-    reply_where = ["(status = 'replied' OR reply_snippet IS NOT NULL)"]
-    reply_params: List[Any] = []
+    reply_where = ["(status = 'replied' OR reply_snippet IS NOT NULL)", "user_id = ?"]
+    reply_params: List[Any] = [user_id]
     if industry:
         reply_where.append("industry = ?")
         reply_params.append(industry.lower())
@@ -182,8 +338,8 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
     # Health
     from sender import _trailing_bounce_rate, is_paused
 
-    bounce_rate = _trailing_bounce_rate()
-    paused = is_paused()
+    bounce_rate = _trailing_bounce_rate(user_id)
+    paused = is_paused(user_id)
     health = {
         "ok": not paused and bounce_rate < 0.03,
         "paused": paused,
@@ -212,14 +368,17 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
 
 
 @app.post("/api/mark-customer/{lead_id}")
-def mark_customer(lead_id: int):
+def mark_customer(lead_id: int, user: dict = Depends(current_user)):
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("UPDATE leads SET is_customer = 1 WHERE id = ?", (lead_id,))
+        cur.execute("UPDATE leads SET is_customer = 1 WHERE id = ? AND user_id = ?", (lead_id, user["id"]))
+        updated = cur.rowcount
         conn.commit()
     finally:
         conn.close()
+    if not updated:
+        raise HTTPException(status_code=404, detail="Lead not found")
     return {"ok": True}
 
 
@@ -233,13 +392,14 @@ def api_companies(
     industry: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=200),
+    user: dict = Depends(current_user),
 ):
     conn = get_conn()
     try:
         cur = conn.cursor()
 
-        where: List[str] = []
-        params: List[Any] = []
+        where: List[str] = ["user_id = ?"]
+        params: List[Any] = [user["id"]]
         if search:
             where.append("(company_name LIKE ? OR email LIKE ?)")
             like = f"%{search}%"
@@ -285,13 +445,14 @@ def api_companies(
 
 
 @app.get("/api/industries")
-def api_industries():
-    """Distinct industries actually present in the leads table (for filter dropdowns)."""
+def api_industries(user: dict = Depends(current_user)):
+    """Distinct industries actually present in the current user's leads table."""
     conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT DISTINCT industry FROM leads WHERE industry IS NOT NULL AND industry != '' ORDER BY industry"
+            "SELECT DISTINCT industry FROM leads WHERE industry IS NOT NULL AND industry != '' AND user_id = ? ORDER BY industry",
+            (user["id"],),
         )
         rows = [r["industry"] for r in cur.fetchall()]
     finally:
@@ -304,12 +465,16 @@ class DeleteIds(BaseModel):
 
 
 @app.delete("/api/companies/{lead_id}")
-def api_delete_company(lead_id: int):
+def api_delete_company(lead_id: int, user: dict = Depends(current_user)):
     conn = get_conn()
     try:
         cur = conn.cursor()
+        # Ensure the lead belongs to the current user before touching events.
+        cur.execute("SELECT id FROM leads WHERE id = ? AND user_id = ?", (lead_id, user["id"]))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Lead not found")
         cur.execute("DELETE FROM events WHERE lead_id = ?", (lead_id,))
-        cur.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
+        cur.execute("DELETE FROM leads WHERE id = ? AND user_id = ?", (lead_id, user["id"]))
         deleted = cur.rowcount
         conn.commit()
     finally:
@@ -320,15 +485,24 @@ def api_delete_company(lead_id: int):
 
 
 @app.post("/api/companies/delete-bulk")
-def api_delete_companies_bulk(body: DeleteIds):
+def api_delete_companies_bulk(body: DeleteIds, user: dict = Depends(current_user)):
     if not body.ids:
         return {"ok": True, "deleted": 0}
     conn = get_conn()
     try:
         cur = conn.cursor()
         placeholders = ", ".join(["?"] * len(body.ids))
-        cur.execute(f"DELETE FROM events WHERE lead_id IN ({placeholders})", body.ids)
-        cur.execute(f"DELETE FROM leads WHERE id IN ({placeholders})", body.ids)
+        # Only touch leads owned by the current user.
+        cur.execute(
+            f"SELECT id FROM leads WHERE id IN ({placeholders}) AND user_id = ?",
+            list(body.ids) + [user["id"]],
+        )
+        owned_ids = [r["id"] for r in cur.fetchall()]
+        if not owned_ids:
+            return {"ok": True, "deleted": 0}
+        owned_ph = ", ".join(["?"] * len(owned_ids))
+        cur.execute(f"DELETE FROM events WHERE lead_id IN ({owned_ph})", owned_ids)
+        cur.execute(f"DELETE FROM leads WHERE id IN ({owned_ph})", owned_ids)
         deleted = cur.rowcount
         conn.commit()
     finally:
@@ -341,14 +515,15 @@ def api_delete_companies_all(
     search: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     industry: Optional[str] = Query(None),
+    user: dict = Depends(current_user),
 ):
-    """Delete ALL companies, optionally scoped to the current search/status/industry filter."""
+    """Delete ALL current-user companies, optionally scoped to the current filter."""
     conn = get_conn()
     try:
         cur = conn.cursor()
 
-        where: List[str] = []
-        params: List[Any] = []
+        where: List[str] = ["user_id = ?"]
+        params: List[Any] = [user["id"]]
         if search:
             where.append("(company_name LIKE ? OR email LIKE ?)")
             like = f"%{search}%"
@@ -359,7 +534,7 @@ def api_delete_companies_all(
         if industry:
             where.append("industry = ?")
             params.append(industry.lower())
-        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        where_sql = f"WHERE {' AND '.join(where)}"
 
         cur.execute(f"SELECT id FROM leads {where_sql}", params)
         ids = [r["id"] for r in cur.fetchall()]
@@ -374,7 +549,7 @@ def api_delete_companies_all(
 
 
 @app.get("/api/followups")
-def api_followups():
+def api_followups(user: dict = Depends(current_user)):
     """Leads awaiting their next follow-up, with the computed due date."""
     conn = get_conn()
     try:
@@ -384,8 +559,10 @@ def api_followups():
             SELECT id, company_name, email, industry, status, sequence_step, last_contact_at
             FROM leads
             WHERE status = 'sent' AND sequence_step BETWEEN 1 AND 3 AND last_contact_at IS NOT NULL
+              AND user_id = ?
             ORDER BY last_contact_at ASC
-            """
+            """,
+            (user["id"],),
         )
         rows = cur.fetchall()
 
@@ -394,9 +571,10 @@ def api_followups():
             """
             SELECT id, company_name, email, industry, status, sequence_step, scheduled_at
             FROM leads
-            WHERE status = 'scheduled' AND sequence_step > 0
+            WHERE status = 'scheduled' AND sequence_step > 0 AND user_id = ?
             ORDER BY scheduled_at ASC
-            """
+            """,
+            (user["id"],),
         )
         queued_rows = cur.fetchall()
     finally:
@@ -442,11 +620,11 @@ def api_followups():
 
 
 @app.post("/api/send-now/{lead_id}")
-def api_send_now(lead_id: int):
+def api_send_now(lead_id: int, user: dict = Depends(current_user)):
     from sender import send_lead_now
 
     try:
-        result = send_lead_now(lead_id)
+        result = send_lead_now(lead_id, user["id"])
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -502,14 +680,8 @@ def _rows_from_csv_text(text: str) -> List[Dict[str, str]]:
 
 
 @app.post("/api/import-csv")
-async def api_import_csv(file: UploadFile = File(...)):
-    """Upload a CSV or Excel (.xlsx) file of companies and upsert them into
-    the DB (status='new').
-
-    Recognised columns (best match wins, case-insensitive):
-      Company Name, Industry, HR Email, Recruitment Email, General Company Email
-      (falls back to a generic 'email'/'Email' column if none of the above exist)
-    """
+async def api_import_csv(file: UploadFile = File(...), user: dict = Depends(current_user)):
+    """Upload a CSV or Excel (.xlsx) file of companies for the current user."""
     init_db()
     raw = await file.read()
     filename = (file.filename or "").lower()
@@ -520,7 +692,7 @@ async def api_import_csv(file: UploadFile = File(...)):
         text = raw.decode("utf-8-sig", errors="ignore")
         rows = _rows_from_csv_text(text)
 
-    imported, updated, skipped = 0, 0, 0
+    imported, updated, skipped, owned_by_other = 0, 0, 0, 0
     conn = get_conn()
     try:
         cur = conn.cursor()
@@ -543,25 +715,40 @@ async def api_import_csv(file: UploadFile = File(...)):
                 continue
 
             primary = emails[0]
-            cur.execute("SELECT id FROM leads WHERE email = ?", (primary,))
+            # Update if this email is already this user's lead; otherwise insert.
+            cur.execute("SELECT id, user_id FROM leads WHERE email = ?", (primary,))
             existing = cur.fetchone()
             if existing:
+                if existing["user_id"] == user["id"]:
+                    cur.execute(
+                        "UPDATE leads SET company_name = ?, industry = ? WHERE id = ?",
+                        (company, industry.lower(), existing["id"]),
+                    )
+                    updated += 1
+                else:
+                    # Email is already used by another account - skip (email is globally UNIQUE).
+                    owned_by_other += 1
+                continue
+            try:
                 cur.execute(
-                    "UPDATE leads SET company_name = ?, industry = ? WHERE id = ?",
-                    (company, industry.lower(), existing["id"]),
-                )
-                updated += 1
-            else:
-                cur.execute(
-                    "INSERT INTO leads (company_name, email, industry, status) VALUES (?, ?, ?, 'new')",
-                    (company, primary, industry.lower()),
+                    "INSERT INTO leads (company_name, email, industry, status, user_id) VALUES (?, ?, ?, 'new', ?)",
+                    (company, primary, industry.lower(), user["id"]),
                 )
                 imported += 1
+            except Exception:
+                # Race condition on UNIQUE(email) - treat as skipped.
+                owned_by_other += 1
         conn.commit()
     finally:
         conn.close()
 
-    return {"ok": True, "imported": imported, "updated": updated, "skipped": skipped}
+    return {
+        "ok": True,
+        "imported": imported,
+        "updated": updated,
+        "skipped": skipped,
+        "owned_by_other": owned_by_other,
+    }
 
 
 class SettingsUpdate(BaseModel):
@@ -572,24 +759,41 @@ class SettingsUpdate(BaseModel):
 
 
 @app.get("/api/settings")
-def api_get_settings():
-    return get_public_settings()
+def api_get_settings(user: dict = Depends(current_user)):
+    return get_public_settings(user["id"])
 
 
 @app.post("/api/settings")
-def api_update_settings(body: SettingsUpdate):
+def api_update_settings(body: SettingsUpdate, user: dict = Depends(current_user)):
     update_settings(
+        user["id"],
         smtp_user=body.smtp_user,
         smtp_password=body.smtp_password,
         from_alias=body.from_alias,
         from_display_name=body.from_display_name,
     )
-    return {"ok": True, "settings": get_public_settings()}
+    return {"ok": True, "settings": get_public_settings(user["id"])}
 
 
 @app.get("/", response_class=HTMLResponse)
-def index():
+def index(user: Optional[dict] = Depends(optional_current_user)):
+    if user is None:
+        return RedirectResponse(url="/login", status_code=302)
     return HTMLResponse(INDEX_HTML)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(user: Optional[dict] = Depends(optional_current_user)):
+    if user is not None:
+        return RedirectResponse(url="/", status_code=302)
+    return HTMLResponse(AUTH_HTML.replace("{{mode}}", "login"))
+
+
+@app.get("/signup", response_class=HTMLResponse)
+def signup_page(user: Optional[dict] = Depends(optional_current_user)):
+    if user is not None:
+        return RedirectResponse(url="/", status_code=302)
+    return HTMLResponse(AUTH_HTML.replace("{{mode}}", "signup"))
 
 
 INDEX_HTML = """<!DOCTYPE html>
@@ -676,7 +880,13 @@ INDEX_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-  <h1>Campaign Engine<span class="sub">Outreach automation dashboard</span></h1>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
+    <h1>Campaign Engine<span class="sub">Outreach automation dashboard</span></h1>
+    <div style="text-align:right;font-size:0.85em;color:var(--muted);">
+      <div id="whoami" style="margin-bottom:4px;"></div>
+      <button class="btn secondary small" onclick="logout()">Sign out</button>
+    </div>
+  </div>
 
   <div class="tabs">
     <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
@@ -865,6 +1075,32 @@ INDEX_HTML = """<!DOCTYPE html>
     let companyPageNum = 1;
     let companyPageSize = 25;
     let companyTotal = 0;
+
+    // Global fetch wrapper: bounces to /login on 401 so expired sessions
+    // don't leave the UI silently broken.
+    const _fetch = window.fetch;
+    window.fetch = async function(...args) {
+      const res = await _fetch(...args);
+      if (res.status === 401) {
+        window.location.href = '/login';
+        // Return a never-resolving promise so callers don't try to parse.
+        return new Promise(() => {});
+      }
+      return res;
+    };
+
+    async function loadMe() {
+      try {
+        const res = await fetch('/api/me');
+        const me = await res.json();
+        document.getElementById('whoami').textContent = me.email + (me.is_admin ? ' (admin)' : '');
+      } catch (e) { /* handled by wrapper */ }
+    }
+
+    async function logout() {
+      try { await fetch('/api/logout', { method: 'POST' }); } catch (e) {}
+      window.location.href = '/login';
+    }
 
     function switchTab(tab) {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
@@ -1220,9 +1456,121 @@ INDEX_HTML = """<!DOCTYPE html>
     document.getElementById('start').value = start.toISOString().split('T')[0];
     document.getElementById('end').value = end.toISOString().split('T')[0];
 
+    loadMe();
     loadIndustries();
     load();
     setInterval(load, 60000);
+  </script>
+</body>
+</html>
+"""
+
+
+AUTH_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Campaign Engine</title>
+<style>
+  :root {
+    --bg: #f4f6fb; --surface: #ffffff; --border: #e6e9f0;
+    --text: #1f2430; --muted: #6b7280; --primary: #4f46e5;
+    --primary-dark: #4338ca; --red: #dc2626; --green: #16a34a;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif;
+    margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    background: var(--surface); padding: 32px 28px; border-radius: var(--radius);
+    box-shadow: 0 4px 20px rgba(16,24,40,0.08); border: 1px solid var(--border);
+    width: 100%; max-width: 380px;
+  }
+  h1 { margin: 0 0 6px; font-size: 1.4em; font-weight: 700; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); font-size: 0.88em; margin-bottom: 22px; }
+  .form-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  label { font-size: 0.85em; font-weight: 600; }
+  input {
+    padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 0.95em; font-family: inherit;
+  }
+  .btn {
+    width: 100%; padding: 11px 14px; background: var(--primary); color: #fff;
+    border: none; border-radius: 8px; cursor: pointer; font-weight: 600;
+    font-size: 0.95em; margin-top: 6px;
+  }
+  .btn:hover { background: var(--primary-dark); }
+  .btn:disabled { background: #c7c9d1; cursor: default; }
+  .swap { text-align: center; margin-top: 16px; font-size: 0.88em; color: var(--muted); }
+  .swap a { color: var(--primary); text-decoration: none; font-weight: 600; }
+  .msg {
+    padding: 10px 12px; border-radius: 8px; font-size: 0.88em; margin-bottom: 14px;
+    display: none;
+  }
+  .msg.err { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; display: block; }
+  .hint { color: var(--muted); font-size: 0.8em; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1 id="title">Sign in</h1>
+    <p class="sub" id="subtitle">Campaign Engine dashboard</p>
+    <div id="msg" class="msg"></div>
+    <form id="authForm" onsubmit="return submitAuth(event)">
+      <div class="form-row">
+        <label for="email">Email</label>
+        <input type="email" id="email" required autocomplete="username" />
+      </div>
+      <div class="form-row">
+        <label for="password">Password</label>
+        <input type="password" id="password" required minlength="8" autocomplete="current-password" />
+        <span class="hint" id="pwHint" style="display:none">Minimum 8 characters.</span>
+      </div>
+      <button type="submit" class="btn" id="submitBtn">Sign in</button>
+    </form>
+    <div class="swap" id="swap"></div>
+  </div>
+
+  <script>
+    const mode = "{{mode}}";
+    const isSignup = mode === "signup";
+    document.getElementById('title').textContent = isSignup ? 'Create account' : 'Sign in';
+    document.getElementById('submitBtn').textContent = isSignup ? 'Create account' : 'Sign in';
+    document.getElementById('password').autocomplete = isSignup ? 'new-password' : 'current-password';
+    document.getElementById('pwHint').style.display = isSignup ? 'block' : 'none';
+    document.getElementById('swap').innerHTML = isSignup
+      ? 'Already have an account? <a href="/login">Sign in</a>'
+      : 'New here? <a href="/signup">Create an account</a>';
+
+    async function submitAuth(e) {
+      e.preventDefault();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const msg = document.getElementById('msg');
+      const btn = document.getElementById('submitBtn');
+      msg.className = 'msg';
+      msg.textContent = '';
+      btn.disabled = true;
+      try {
+        const res = await fetch(isSignup ? '/api/signup' : '/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Request failed');
+        window.location.href = '/';
+      } catch (err) {
+        msg.className = 'msg err';
+        msg.textContent = err.message;
+        btn.disabled = false;
+      }
+      return false;
+    }
   </script>
 </body>
 </html>
