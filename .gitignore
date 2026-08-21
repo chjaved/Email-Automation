@@ -5,6 +5,7 @@ __pycache__/
 credentials.json
 token.json
 campaign.db
+campaign_engine.db
 campaign.log
 do_not_email.csv
 *.csv
