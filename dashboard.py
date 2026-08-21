@@ -18,11 +18,12 @@ from config import DASHBOARD_HOST, DASHBOARD_PORT, DB_PATH, FOLLOWUP_SCHEDULE, T
 from db import get_conn, init_db
 from send_batch import pick_emails
 from settings import (
-    clear_attachment,
-    get_attachment,
+    add_attachment,
+    delete_attachment,
+    get_attachment_by_id,
     get_public_settings,
     invalidate_generated_emails,
-    set_attachment,
+    list_attachments,
     update_settings,
 )
 
@@ -804,11 +805,11 @@ def api_update_settings(body: SettingsUpdate, user: dict = Depends(current_user)
     }
 
 
-# ---- Per-account attachment (stored in DB, survives redeploys) -----------
-_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB
+# ---- Per-account attachments (multiple files, stored in DB) ---------------
+_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB per file
 
 
-@app.post("/api/settings/attachment")
+@app.post("/api/settings/attachments")
 async def api_upload_attachment(
     file: UploadFile = File(...),
     user: dict = Depends(current_user),
@@ -823,21 +824,23 @@ async def api_upload_attachment(
         )
     name = (file.filename or "attachment.bin").strip() or "attachment.bin"
     mime = (file.content_type or "application/octet-stream").strip() or "application/octet-stream"
-    set_attachment(user["id"], data, name, mime)
-    return {"ok": True, "settings": get_public_settings(user["id"])}
+    add_attachment(user["id"], data, name, mime)
+    return {"ok": True, "attachments": list_attachments(user["id"])}
 
 
-@app.delete("/api/settings/attachment")
-def api_delete_attachment(user: dict = Depends(current_user)):
-    clear_attachment(user["id"])
-    return {"ok": True, "settings": get_public_settings(user["id"])}
+@app.delete("/api/settings/attachments/{attach_id}")
+def api_delete_attachment(attach_id: int, user: dict = Depends(current_user)):
+    deleted = delete_attachment(attach_id, user["id"])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return {"ok": True, "attachments": list_attachments(user["id"])}
 
 
-@app.get("/api/settings/attachment")
-def api_download_attachment(user: dict = Depends(current_user)):
-    att = get_attachment(user["id"])
+@app.get("/api/settings/attachments/{attach_id}")
+def api_download_attachment(attach_id: int, user: dict = Depends(current_user)):
+    att = get_attachment_by_id(attach_id, user["id"])
     if att is None:
-        raise HTTPException(status_code=404, detail="No attachment configured")
+        raise HTTPException(status_code=404, detail="Attachment not found")
     data, name, mime = att
     return Response(
         content=data,
@@ -1183,24 +1186,22 @@ INDEX_HTML = """<!DOCTYPE html>
     </div>
 
     <div class="section">
-      <h3>Email attachment</h3>
+      <h3>Email attachments</h3>
       <p class="hint">
-        Upload a file (PDF, deck, brochure &mdash; up to 10&nbsp;MB) and it will be attached to every outbound email
-        for this account, including follow-ups. Stored securely in the database so it survives redeploys.
+        Upload one or more files (PDF, deck, brochure &mdash; up to 10&nbsp;MB each) and they will be attached to every
+        outbound email for this account, including follow-ups. Stored securely in the database so it survives redeploys.
       </p>
       <div class="form-row">
-        <label>Current attachment</label>
-        <div id="attachmentStatus" class="desc">Loading&hellip;</div>
+        <label>Current attachments</label>
+        <div id="attachmentList" class="desc">Loading&hellip;</div>
       </div>
       <div class="form-row">
-        <label for="setAttachmentFile">Upload / replace</label>
+        <label for="setAttachmentFile">Add a file</label>
         <input type="file" id="setAttachmentFile" />
-        <span class="desc">Click "Upload" after choosing a file.</span>
+        <span class="desc">Choose a file and click "Upload". You can add multiple files.</span>
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
-        <button class="btn" onclick="uploadAttachment()">Upload attachment</button>
-        <button class="btn" style="background:#dc2626;" onclick="deleteAttachment()" id="btnDeleteAttachment">Remove attachment</button>
-        <a class="btn" style="background:#6b7280;" href="/api/settings/attachment" target="_blank" id="btnDownloadAttachment">Download current</a>
+        <button class="btn" onclick="uploadAttachment()">Upload</button>
       </div>
     </div>
   </div>
@@ -1245,20 +1246,23 @@ INDEX_HTML = """<!DOCTYPE html>
       if (tab === 'settings') loadSettings();
     }
 
-    function _renderAttachmentStatus(s) {
-      const box = document.getElementById('attachmentStatus');
-      const delBtn = document.getElementById('btnDeleteAttachment');
-      const dlBtn = document.getElementById('btnDownloadAttachment');
-      if (s.has_attachment) {
-        const kb = Math.max(1, Math.round((s.attachment_size || 0) / 1024));
-        box.innerHTML = 'Attached: <strong>' + (s.attachment_name || 'file') + '</strong> (' + kb + ' KB)';
-        delBtn.style.display = '';
-        dlBtn.style.display = '';
-      } else {
-        box.textContent = 'None (emails will send without an attachment unless the server default file is present).';
-        delBtn.style.display = 'none';
-        dlBtn.style.display = 'none';
+    function _renderAttachmentList(s) {
+      const box = document.getElementById('attachmentList');
+      const atts = s.attachments || [];
+      if (!atts.length) {
+        box.textContent = 'No attachments. Emails will send without attachments unless the server default file is present.';
+        return;
       }
+      let html = '';
+      atts.forEach(function(a) {
+        const kb = Math.max(1, Math.round((a.size || 0) / 1024));
+        html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #e5e7eb;">';
+        html += '<span style="flex:1;"><strong>' + a.filename + '</strong> (' + kb + ' KB)</span>';
+        html += '<a class="btn" style="background:#6b7280;padding:2px 10px;font-size:12px;" href="/api/settings/attachments/' + a.id + '" target="_blank">Download</a>';
+        html += '<button class="btn" style="background:#dc2626;padding:2px 10px;font-size:12px;" onclick="deleteAttachment(' + a.id + ',\'' + a.filename.replace(/'/g, "") + '\')">Remove</button>';
+        html += '</div>';
+      });
+      box.innerHTML = html;
     }
 
     async function loadSettings() {
@@ -1274,7 +1278,7 @@ INDEX_HTML = """<!DOCTYPE html>
       document.getElementById('smtpPasswordStatus').textContent = s.smtp_password_set
         ? 'A password is currently configured. Leave blank to keep it.'
         : 'Not set yet.';
-      _renderAttachmentStatus(s);
+      _renderAttachmentList(s);
     }
 
     async function saveSettings() {
@@ -1315,7 +1319,7 @@ INDEX_HTML = """<!DOCTYPE html>
       const fd = new FormData();
       fd.append('file', input.files[0]);
       try {
-        const res = await fetch('/api/settings/attachment', { method: 'POST', body: fd });
+        const res = await fetch('/api/settings/attachments', { method: 'POST', body: fd });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Upload failed');
         showToast('Attachment uploaded', true);
@@ -1326,10 +1330,10 @@ INDEX_HTML = """<!DOCTYPE html>
       }
     }
 
-    async function deleteAttachment() {
-      if (!confirm('Remove the current attachment? Emails will send without one until you upload a new file.')) return;
+    async function deleteAttachment(id, name) {
+      if (!confirm('Remove "' + name + '"?')) return;
       try {
-        const res = await fetch('/api/settings/attachment', { method: 'DELETE' });
+        const res = await fetch('/api/settings/attachments/' + id, { method: 'DELETE' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Delete failed');
         showToast('Attachment removed', true);

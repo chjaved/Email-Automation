@@ -118,6 +118,133 @@ def clear_attachment(user_id: int) -> None:
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Multi-attachment support (user_attachments table)
+# ---------------------------------------------------------------------------
+def list_attachments(user_id: int) -> list:
+    """Return list of {id, filename, mime, size} for all attachments."""
+    from datetime import datetime, timezone
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, filename, mime, data FROM user_attachments WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        result = []
+        for r in rows:
+            data = r["data"]
+            size = 0
+            if data is not None:
+                if not isinstance(data, (bytes, bytearray)):
+                    try:
+                        data = bytes(data)
+                    except Exception:
+                        data = b""
+                size = len(data)
+            result.append({
+                "id": r["id"],
+                "filename": r["filename"],
+                "mime": r["mime"] or "application/octet-stream",
+                "size": size,
+            })
+        return result
+    finally:
+        conn.close()
+
+
+def add_attachment(user_id: int, data: bytes, name: str, mime: str) -> int:
+    """Insert a new attachment row and return its id."""
+    from datetime import datetime, timezone
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO user_attachments (user_id, filename, mime, data, uploaded_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, name, mime, data, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_attachment_by_id(attach_id: int, user_id: int) -> Optional[Tuple[bytes, str, str]]:
+    """Return (bytes, filename, mime) for a specific attachment, or None."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT filename, mime, data FROM user_attachments WHERE id = ? AND user_id = ?",
+            (attach_id, user_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        data = row["data"]
+        if not isinstance(data, (bytes, bytearray)):
+            try:
+                data = bytes(data)
+            except Exception:
+                return None
+        return bytes(data), row["filename"], row["mime"] or "application/octet-stream"
+    finally:
+        conn.close()
+
+
+def delete_attachment(attach_id: int, user_id: int) -> bool:
+    """Delete a specific attachment. Returns True if a row was deleted."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM user_attachments WHERE id = ? AND user_id = ?",
+            (attach_id, user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_all_attachments(user_id: int) -> list:
+    """Return list of (bytes, filename, mime) for all user attachments.
+    Used by sender.py to attach all files to outgoing emails."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT filename, mime, data FROM user_attachments WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        result = []
+        for r in rows:
+            data = r["data"]
+            if not isinstance(data, (bytes, bytearray)):
+                try:
+                    data = bytes(data)
+                except Exception:
+                    continue
+            if data:
+                result.append((bytes(data), r["filename"], r["mime"] or "application/octet-stream"))
+        return result
+    finally:
+        conn.close()
+
+
+def migrate_legacy_attachment(user_id: int) -> None:
+    """If the user has an old single attachment in user_settings, move it
+    to the user_attachments table and clear the legacy columns."""
+    legacy = get_attachment(user_id)
+    if legacy is None:
+        return
+    data, name, mime = legacy
+    add_attachment(user_id, data, name, mime)
+    clear_attachment(user_id)
+
+
 def _ensure_row(user_id: int) -> None:
     """Guarantee a user_settings row exists so UPDATEs land somewhere."""
     if _get_row(user_id):
@@ -169,13 +296,13 @@ def get_cc_enabled(user_id: int) -> bool:
 def get_public_settings(user_id: int) -> dict:
     """Settings safe to return to the dashboard (never expose the raw password)."""
     row = _get_row(user_id)
-    attach_name = (row["attachment_name"] if row else "") or ""
-    attach_size = 0
+    # Migrate legacy single attachment to multi-attachment table if needed
     if row and row["attachment_bytes"] is not None:
         try:
-            attach_size = len(bytes(row["attachment_bytes"]))
+            migrate_legacy_attachment(user_id)
         except Exception:
-            attach_size = 0
+            pass
+    attachments = list_attachments(user_id)
     return {
         "smtp_user": get_smtp_user(user_id),
         "smtp_password_set": bool(get_smtp_password(user_id)),
@@ -185,9 +312,8 @@ def get_public_settings(user_id: int) -> dict:
         "ai_context": get_ai_context(user_id),
         "sample_email": get_sample_email(user_id),
         "email_instructions": get_email_instructions(user_id),
-        "has_attachment": attach_size > 0,
-        "attachment_name": attach_name,
-        "attachment_size": attach_size,
+        "attachments": attachments,
+        "has_attachment": len(attachments) > 0,
     }
 
 

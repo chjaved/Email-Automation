@@ -119,29 +119,31 @@ def verify_sender(user_id: int) -> str:
 # Message building
 # ---------------------------------------------------------------------------
 def _attach_pdf(msg: EmailMessage, user_id: Optional[int] = None) -> None:
-    """Attach the per-user file if one is uploaded, else fall back to the
-    global ATTACHMENT_PATH on disk. Silently sends without attachment if
-    neither is available."""
-    # 1) Per-user attachment stored in DB (survives redeploys)
+    """Attach all per-user files from the user_attachments table, else fall
+    back to the global ATTACHMENT_PATH on disk. Silently sends without
+    attachment if neither is available."""
+    # 1) Per-user attachments stored in DB (supports multiple files)
     if user_id is not None:
         try:
-            from settings import get_attachment
-            att = get_attachment(user_id)
+            from settings import get_all_attachments, migrate_legacy_attachment
+            # Migrate old single attachment if it exists
+            migrate_legacy_attachment(user_id)
+            attachments = get_all_attachments(user_id)
         except Exception as e:
-            logger.warning("Failed to load per-user attachment: %s", e)
-            att = None
-        if att is not None:
-            data, name, mime = att
+            logger.warning("Failed to load per-user attachments: %s", e)
+            attachments = []
+        for data, name, mime in attachments:
             maintype, _, subtype = (mime or "application/octet-stream").partition("/")
             if not subtype:
                 maintype, subtype = "application", "octet-stream"
             msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
+        if attachments:
             return
 
     # 2) Legacy global fallback (env-configured path on disk)
     path: Path = ATTACHMENT_PATH
     if not path.exists():
-        logger.info("No per-user attachment and global %s missing; sending without PDF", path)
+        logger.info("No per-user attachments and global %s missing; sending without PDF", path)
         return
     ctype, _ = mimetypes.guess_type(str(path))
     maintype, subtype = (ctype or "application/pdf").split("/", 1)

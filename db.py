@@ -255,6 +255,16 @@ CREATE TABLE IF NOT EXISTS user_settings (
     email_instructions TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+CREATE TABLE IF NOT EXISTS user_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    mime TEXT,
+    data BLOB NOT NULL,
+    uploaded_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 """
 
 POSTGRES_SCHEMA_STATEMENTS = [
@@ -345,6 +355,16 @@ POSTGRES_SCHEMA_STATEMENTS = [
         attachment_mime TEXT,
         sample_email TEXT,
         email_instructions TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_attachments (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        filename TEXT NOT NULL,
+        mime TEXT,
+        data BYTEA NOT NULL,
+        uploaded_at TEXT
     )
     """,
 ]
