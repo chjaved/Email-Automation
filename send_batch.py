@@ -77,7 +77,7 @@ def import_only(csv_path: Path, limit: int) -> None:
     for t in targets:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT id, status FROM leads WHERE email = ?", (t["email"],))
+        cur.execute("SELECT id, status FROM leads WHERE email = ? LIMIT 1", (t["email"],))
         row = cur.fetchone()
         if row:
             cur.execute(
@@ -113,7 +113,7 @@ def _already_contacted_emails() -> set:
 def _upsert_lead(company: str, email: str, industry: str) -> int:
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT id FROM leads WHERE email = ?", (email,))
+    cur.execute("SELECT id FROM leads WHERE email = ? LIMIT 1", (email,))
     row = cur.fetchone()
     if row:
         lead_id = row["id"]

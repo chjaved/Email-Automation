@@ -700,7 +700,7 @@ async def api_import_csv(file: UploadFile = File(...), user: dict = Depends(curr
         text = raw.decode("utf-8-sig", errors="ignore")
         rows = _rows_from_csv_text(text)
 
-    imported, updated, skipped, owned_by_other = 0, 0, 0, 0
+    imported, updated, skipped = 0, 0, 0
     conn = get_conn()
     try:
         cur = conn.cursor()
@@ -723,19 +723,15 @@ async def api_import_csv(file: UploadFile = File(...), user: dict = Depends(curr
                 continue
 
             primary = emails[0]
-            # Update if this email is already this user's lead; otherwise insert.
-            cur.execute("SELECT id, user_id FROM leads WHERE email = ?", (primary,))
+            # Check if this email already exists for THIS user
+            cur.execute("SELECT id FROM leads WHERE email = ? AND user_id = ?", (primary, user["id"]))
             existing = cur.fetchone()
             if existing:
-                if existing["user_id"] == user["id"]:
-                    cur.execute(
-                        "UPDATE leads SET company_name = ?, industry = ? WHERE id = ?",
-                        (company, industry.lower(), existing["id"]),
-                    )
-                    updated += 1
-                else:
-                    # Email is already used by another account - skip (email is globally UNIQUE).
-                    owned_by_other += 1
+                cur.execute(
+                    "UPDATE leads SET company_name = ?, industry = ? WHERE id = ?",
+                    (company, industry.lower(), existing["id"]),
+                )
+                updated += 1
                 continue
             try:
                 cur.execute(
@@ -744,8 +740,8 @@ async def api_import_csv(file: UploadFile = File(...), user: dict = Depends(curr
                 )
                 imported += 1
             except Exception:
-                # Race condition on UNIQUE(email) - treat as skipped.
-                owned_by_other += 1
+                # Race condition on unique(email, user_id) - treat as skipped.
+                skipped += 1
         conn.commit()
     finally:
         conn.close()
@@ -755,7 +751,6 @@ async def api_import_csv(file: UploadFile = File(...), user: dict = Depends(curr
         "imported": imported,
         "updated": updated,
         "skipped": skipped,
-        "owned_by_other": owned_by_other,
     }
 
 

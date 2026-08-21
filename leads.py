@@ -230,7 +230,7 @@ def ingest_csv(csv_path: Path) -> Dict[str, int]:
                 INSERT INTO leads
                 (company_name, email, website, socials_json, industry, location, status)
                 VALUES (?, ?, ?, ?, ?, ?, 'new')
-                ON CONFLICT (email) DO NOTHING
+                ON CONFLICT(email, user_id) DO NOTHING
                 """,
                 (company_name, raw_email, website, socials, industry, location),
             )

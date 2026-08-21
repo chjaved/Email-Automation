@@ -186,7 +186,7 @@ SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS leads (
     id INTEGER PRIMARY KEY,
     company_name TEXT,
-    email TEXT UNIQUE,
+    email TEXT,
     website TEXT,
     socials_json TEXT,
     industry TEXT,
@@ -203,6 +203,7 @@ CREATE TABLE IF NOT EXISTS leads (
     gmail_thread_id TEXT,
     gmail_message_id_header TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_user ON leads(email, user_id);
 
 CREATE TABLE IF NOT EXISTS emails (
     id INTEGER PRIMARY KEY,
@@ -290,7 +291,7 @@ POSTGRES_SCHEMA_STATEMENTS = [
     CREATE TABLE IF NOT EXISTS leads (
         id SERIAL PRIMARY KEY,
         company_name TEXT,
-        email TEXT UNIQUE,
+        email TEXT,
         website TEXT,
         socials_json TEXT,
         industry TEXT,
@@ -307,6 +308,9 @@ POSTGRES_SCHEMA_STATEMENTS = [
         gmail_thread_id TEXT,
         gmail_message_id_header TEXT
     )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_user ON leads(email, user_id)
     """,
     """
     CREATE TABLE IF NOT EXISTS emails (
@@ -394,6 +398,71 @@ POSTGRES_SCHEMA_STATEMENTS = [
 ]
 
 
+def _migrate_leads_unique_to_composite_sqlite(conn) -> None:
+    """Migrate leads table from email-UNIQUE to (email, user_id) composite unique.
+
+    SQLite cannot DROP a column constraint, so we recreate the table."""
+    cur = conn.execute("PRAGMA table_info(leads)")
+    cols = cur.fetchall()
+    if not cols:
+        return  # table doesn't exist yet; schema will create it correctly
+
+    # Check if email has a UNIQUE constraint by looking at the schema SQL
+    schema_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='leads'").fetchone()
+    if not schema_sql:
+        return
+    schema_text = schema_sql["sql"] or ""
+    # If the schema doesn't have "email TEXT UNIQUE", nothing to migrate
+    if "email TEXT UNIQUE" not in schema_text and "email\" TEXT UNIQUE" not in schema_text:
+        return
+
+    # Recreate the table without the global UNIQUE on email
+    col_names = [c["name"] for c in cols]
+    col_list = ", ".join(col_names)
+    conn.executescript(f"""
+        CREATE TABLE IF NOT EXISTS leads_new (
+            id INTEGER PRIMARY KEY,
+            company_name TEXT,
+            email TEXT,
+            website TEXT,
+            socials_json TEXT,
+            industry TEXT,
+            location TEXT,
+            status TEXT DEFAULT 'new',
+            enriched_data TEXT,
+            sequence_step INTEGER DEFAULT 0,
+            last_contact_at TEXT,
+            scheduled_at TEXT,
+            sent_at TEXT,
+            reply_snippet TEXT,
+            is_customer INTEGER DEFAULT 0,
+            gmail_message_id TEXT,
+            gmail_thread_id TEXT,
+            gmail_message_id_header TEXT,
+            user_id INTEGER
+        );
+        INSERT INTO leads_new ({col_list}) SELECT {col_list} FROM leads;
+        DROP TABLE leads;
+        ALTER TABLE leads_new RENAME TO leads;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_user ON leads(email, user_id);
+    """)
+
+
+def _migrate_leads_unique_to_composite_postgres(conn) -> None:
+    """Drop the old email-UNIQUE constraint on leads and add (email, user_id) composite."""
+    cur = conn.cursor()
+    # Find and drop the email unique constraint if it exists
+    cur.execute("""
+        SELECT conname FROM pg_constraint
+        WHERE conrelid = 'leads'::regclass AND contype = 'u'
+        AND conname LIKE '%email%'
+    """)
+    for row in cur.fetchall():
+        cur.execute(f"ALTER TABLE leads DROP CONSTRAINT IF EXISTS {row['conname']}")
+    # Create composite unique index if not exists
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_user ON leads(email, user_id)")
+
+
 def init_db() -> None:
     if USE_POSTGRES:
         conn = get_conn()
@@ -402,6 +471,8 @@ def init_db() -> None:
             cur.execute(stmt)
         conn.commit()
         _add_missing_columns_postgres(conn)
+        conn.commit()
+        _migrate_leads_unique_to_composite_postgres(conn)
         conn.commit()
         conn.close()
         return
@@ -412,6 +483,7 @@ def init_db() -> None:
     conn = get_conn()
     conn.executescript(SQLITE_SCHEMA)
     _add_missing_columns_sqlite(conn)
+    _migrate_leads_unique_to_composite_sqlite(conn)
     conn.commit()
     conn.close()
 
