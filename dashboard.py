@@ -1246,9 +1246,11 @@ INDEX_HTML = """<!DOCTYPE html>
       if (tab === 'settings') loadSettings();
     }
 
+    let _currentAttachments = [];
     function _renderAttachmentList(s) {
       const box = document.getElementById('attachmentList');
       const atts = s.attachments || [];
+      _currentAttachments = atts;
       if (!atts.length) {
         box.textContent = 'No attachments. Emails will send without attachments unless the server default file is present.';
         return;
@@ -1259,7 +1261,7 @@ INDEX_HTML = """<!DOCTYPE html>
         html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #e5e7eb;">';
         html += '<span style="flex:1;"><strong>' + a.filename + '</strong> (' + kb + ' KB)</span>';
         html += '<a class="btn" style="background:#6b7280;padding:2px 10px;font-size:12px;" href="/api/settings/attachments/' + a.id + '" target="_blank">Download</a>';
-        html += '<button class="btn" style="background:#dc2626;padding:2px 10px;font-size:12px;" onclick="deleteAttachment(' + a.id + ',\'' + a.filename.replace(/'/g, "") + '\')">Remove</button>';
+        html += '<button class="btn" style="background:#dc2626;padding:2px 10px;font-size:12px;" onclick="deleteAttachment(' + a.id + ')">Remove</button>';
         html += '</div>';
       });
       box.innerHTML = html;
@@ -1330,7 +1332,9 @@ INDEX_HTML = """<!DOCTYPE html>
       }
     }
 
-    async function deleteAttachment(id, name) {
+    async function deleteAttachment(id) {
+      var att = _currentAttachments.find(function(a) { return a.id === id; });
+      var name = att ? att.filename : 'this file';
       if (!confirm('Remove "' + name + '"?')) return;
       try {
         const res = await fetch('/api/settings/attachments/' + id, { method: 'DELETE' });
