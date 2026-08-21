@@ -200,15 +200,17 @@ def list_attachments(user_id: int) -> list:
 def add_attachment(user_id: int, data: bytes, name: str, mime: str) -> int:
     """Insert a new attachment row and return its id."""
     from datetime import datetime, timezone
+    from db import insert_returning_id
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute(
+        attach_id = insert_returning_id(
+            cur,
             "INSERT INTO user_attachments (user_id, filename, mime, data, uploaded_at) VALUES (?, ?, ?, ?, ?)",
             (user_id, name, mime, data, datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
-        return cur.lastrowid
+        return attach_id
     finally:
         conn.close()
 
