@@ -434,19 +434,24 @@ def _generate_from_sample(
 
     prompt = (
         "You are personalising an outbound B2B email for a specific recipient company.\n"
-        "Below is the EXACT email template from the sender. Your job is to make ONLY\n"
-        "the minimal changes needed to personalise it for the recipient company.\n\n"
+        "Below is the EXACT email template from the sender. Your job is to personalise\n"
+        "it for the recipient company while keeping the core message intact.\n\n"
         f"Recipient company: {company_name}\n"
         f"Industry: {industry}\n"
         f"Location: {location}\n"
         f"{context_block}"
         f"{instr_block}"
         "RULES:\n"
-        "- Keep the overall structure, tone, and length as close to the sample as possible.\n"
-        "- Only change what's necessary to address this specific company.\n"
+        "- Keep the overall structure, tone, and core content of the sample.\n"
+        "- Replace any [Company] or {company_name} placeholders with the recipient company name.\n"
+        "- IMPORTANT: Add 2-3 personalised lines near the opening that specifically reference\n"
+        f"  the recipient's industry ({industry}) and how the offering is relevant to them.\n"
+        "  For example, mention industry-specific challenges, use cases, or benefits.\n"
+        "  These lines should feel natural and tailored, not generic.\n"
+        "- In the closing paragraph, mention the recipient company by name when inviting\n"
+        "  them to a demo or discussion.\n"
         "- Do NOT invent facts about the company that aren't in the sample or brief.\n"
         "- Do NOT add emojis, markdown, or bullet points unless they're in the sample.\n"
-        "- If the sample has placeholders like [Company] or {company_name}, replace them.\n"
         "- If the instructions say to change something, change ONLY that.\n"
         "- If the instructions say to NOT touch something, leave it EXACTLY as-is.\n"
         "- Return ONLY the final email body text (no subject line, no commentary).\n\n"
@@ -457,11 +462,11 @@ def _generate_from_sample(
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": "You are a professional B2B email writer. You follow templates precisely and make only requested changes."},
+                {"role": "system", "content": "You are a professional B2B email writer. You follow templates closely but add genuine personalisation for each recipient company based on their industry and niche."},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.4,
-            max_tokens=1200,
+            temperature=0.5,
+            max_tokens=1600,
         )
         body = (resp.choices[0].message.content or "").strip()
         if not body:
@@ -476,6 +481,9 @@ def _generate_from_sample(
                     subject = line[6:].strip()
                     # Replace placeholders
                     subject = subject.replace("[Company]", company_name).replace("{company_name}", company_name)
+                    # If no placeholder was replaced, append company name
+                    if company_name.lower() not in subject.lower():
+                        subject = f"{subject} – {company_name}"
                     break
         if not subject:
             subject_prompt = (
