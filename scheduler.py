@@ -20,6 +20,7 @@ def _random_time_in_window(
     day: date,
     profile,
     peak_bias: float = 0.6,
+    min_time: Optional[datetime] = None,
 ) -> Optional[datetime]:
     """Generate a random local datetime inside the industry window for the given day."""
     if not profile.days:
@@ -30,6 +31,10 @@ def _random_time_in_window(
         end = datetime.combine(day, time(23, 59, 59), tzinfo=ZoneInfo(TIMEZONE))
     else:
         end = datetime.combine(day, time(profile.end_hour, 0, 0), tzinfo=ZoneInfo(TIMEZONE))
+
+    # If min_time is set (e.g. "now" when building mid-day), don't schedule in the past
+    if min_time is not None and min_time > start:
+        start = min_time
 
     if start >= end:
         return None
@@ -279,23 +284,17 @@ def build_daily_schedule(user_id: int, schedule_date: Optional[date] = None) -> 
 
     selected = _select_diverse(due, min(remaining_cap, len(due)))
 
+    now_dt = datetime.now(tz)
     schedule: List[Tuple[int, datetime, datetime]] = []
     for lead in selected:
         industry = (lead["industry"] or "other").lower()
         profile = get_profile(industry)
-        dt = _random_time_in_window(schedule_date, profile)
+        dt = _random_time_in_window(schedule_date, profile, min_time=now_dt)
         if not dt:
             continue
 
-        # Pre-generate the right email so tokens are not burned at send time
-        try:
-            if lead["status"] == "enriched":
-                generate_for_lead(lead)
-            else:
-                get_followup_body(lead, lead["sequence_step"])
-        except Exception as e:
-            logger.error("Email generation failed for lead %s (%s): %s", lead["id"], lead["email"], e)
-            continue
+        # Skip pre-generation to avoid OpenAI bottleneck with large batches.
+        # Emails will be generated on-demand at send time.
 
         window_end = datetime.combine(
             schedule_date,
