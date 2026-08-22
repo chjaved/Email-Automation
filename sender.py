@@ -42,7 +42,6 @@ from settings import get_from_alias, get_from_display_name, get_smtp_password, g
 from followups import get_followup_body, is_final
 from generator import generate_for_lead
 from leads import add_do_not_email, is_do_not_email
-from scheduler import build_daily_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -534,22 +533,6 @@ def _due_leads(user_id: int) -> List[sqlite3.Row]:
     now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
     conn = get_conn()
     cur = conn.cursor()
-    # Debug: count all scheduled leads for this user (ignoring time)
-    cur.execute(
-        "SELECT COUNT(*) AS cnt FROM leads WHERE status = 'scheduled' AND user_id = ?",
-        (user_id,),
-    )
-    total_scheduled = cur.fetchone()["cnt"]
-    # Debug: show sample scheduled_at values
-    cur.execute(
-        "SELECT scheduled_at FROM leads WHERE status = 'scheduled' AND user_id = ? ORDER BY scheduled_at LIMIT 3",
-        (user_id,),
-    )
-    samples = [r["scheduled_at"] for r in cur.fetchall()]
-    logger.info(
-        "_due_leads: now=%s, total_scheduled=%d, sample_scheduled_at=%s",
-        now, total_scheduled, samples,
-    )
     cur.execute(
         "SELECT * FROM leads WHERE status = 'scheduled' AND scheduled_at IS NOT NULL "
         "AND scheduled_at <= ? AND user_id = ? ORDER BY scheduled_at",
@@ -679,13 +662,8 @@ def _run_cycle_for_user(user_id: int) -> bool:
         logger.error("User %s not ready to send (%s); skipping this cycle.", user_id, e)
         return False
 
-    # Check for already-due leads first (e.g. from "Send all" button)
+    # Just send whatever is due — no scheduler
     due = _due_leads(user_id)
-    if not due:
-        # No due leads — build schedule for today (may enrich new leads)
-        build_daily_schedule(user_id)
-        due = _due_leads(user_id)
-
     if due:
         logger.info("Found %d due leads for user %s", len(due), user_id)
         try:
