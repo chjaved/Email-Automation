@@ -723,20 +723,28 @@ async def api_import_csv(file: UploadFile = File(...), user: dict = Depends(curr
                 continue
 
             primary = emails[0]
-            # Check if this email already exists for THIS user
-            cur.execute("SELECT id FROM leads WHERE email = ? AND user_id = ?", (primary, user["id"]))
+            all_emails_str = " ".join(emails)
+            # Check if this primary email already exists for THIS user
+            # Match: exact all_emails_str, primary as first of multi-email, or primary standalone
+            cur.execute("SELECT id FROM leads WHERE email = ? AND user_id = ?", (all_emails_str, user["id"]))
             existing = cur.fetchone()
+            if not existing:
+                cur.execute("SELECT id FROM leads WHERE email LIKE ? AND user_id = ?", (primary + " %", user["id"]))
+                existing = cur.fetchone()
+            if not existing:
+                cur.execute("SELECT id FROM leads WHERE email = ? AND user_id = ?", (primary, user["id"]))
+                existing = cur.fetchone()
             if existing:
                 cur.execute(
-                    "UPDATE leads SET company_name = ?, industry = ? WHERE id = ?",
-                    (company, industry.lower(), existing["id"]),
+                    "UPDATE leads SET company_name = ?, industry = ?, email = ? WHERE id = ?",
+                    (company, industry.lower(), all_emails_str, existing["id"]),
                 )
                 updated += 1
                 continue
             try:
                 cur.execute(
                     "INSERT INTO leads (company_name, email, industry, status, user_id) VALUES (?, ?, ?, 'new', ?)",
-                    (company, primary, industry.lower(), user["id"]),
+                    (company, all_emails_str, industry.lower(), user["id"]),
                 )
                 imported += 1
             except Exception:

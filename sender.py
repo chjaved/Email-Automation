@@ -281,7 +281,10 @@ def send_message(
     in_reply_to: str = "",
     thread_id: str = "",
 ) -> Optional[Dict[str, str]]:
-    to = lead["email"]
+    # Split multiple emails (space-separated); first is To, rest are CC
+    all_emails = (lead["email"] or "").split()
+    to = all_emails[0] if all_emails else lead["email"]
+    extra_cc = all_emails[1:] if len(all_emails) > 1 else []
 
     email_data = get_email_body(lead)
     subject = email_data["subject"]
@@ -293,7 +296,7 @@ def send_message(
 
     from settings import get_cc_enabled
 
-    cc_list = DEFAULT_CC_EMAILS if get_cc_enabled(user_id) else []
+    cc_list = (DEFAULT_CC_EMAILS if get_cc_enabled(user_id) else []) + extra_cc
     msg = _build_message(to, from_email, subject, body, user_id, in_reply_to=in_reply_to, cc=cc_list)
 
     try:
@@ -557,7 +560,7 @@ def send_due(session: SMTPSession, from_email: str, user_id: int) -> int:
             logger.warning("Campaign is paused; stopping send loop.")
             return sent_count
 
-        if is_do_not_email(lead["email"]):
+        if is_do_not_email(lead["email"].split()[0] if lead["email"] else ""):
             logger.info("Skipping %s: in do_not_email.csv", lead["email"])
             set_lead_status(lead["id"], "unsubscribed")
             continue
@@ -710,7 +713,7 @@ def send_lead_now(lead_id: int, user_id: int) -> Dict[str, Any]:
     if lead is None:
         raise ValueError(f"Lead {lead_id} not found")
 
-    if is_do_not_email(lead["email"]):
+    if is_do_not_email(lead["email"].split()[0] if lead["email"] else ""):
         set_lead_status(lead_id, "unsubscribed")
         raise ValueError(f"{lead['email']} is on the do-not-email list")
 
