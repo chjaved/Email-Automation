@@ -646,6 +646,58 @@ def api_send_now(lead_id: int, user: dict = Depends(current_user)):
     return {"ok": True, "result": result}
 
 
+@app.post("/api/send-all")
+def api_send_all(
+    search: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    industry: Optional[str] = Query(None),
+    user: dict = Depends(current_user),
+):
+    """Schedule all sendable leads matching the filter for immediate sending.
+
+    Sendable statuses: new, enriched, scheduled (re-scheduled to now).
+    Sent leads with due follow-ups are also included.
+    """
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from config import TIMEZONE
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        where: List[str] = ["user_id = ?"]
+        params: List[Any] = [user["id"]]
+        if search:
+            where.append("(company_name LIKE ? OR email LIKE ?)")
+            like = f"%{search}%"
+            params.extend([like, like])
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if industry:
+            where.append("industry = ?")
+            params.append(industry.lower())
+        where_sql = f"WHERE {' AND '.join(where)}"
+
+        # Only sendable leads
+        cur.execute(
+            f"SELECT id FROM leads {where_sql} AND status IN ('new', 'enriched', 'scheduled')",
+            params,
+        )
+        ids = [r["id"] for r in cur.fetchall()]
+
+        now_iso = _dt.now(ZoneInfo(TIMEZONE)).isoformat()
+        for lead_id in ids:
+            cur.execute(
+                "UPDATE leads SET status = 'scheduled', scheduled_at = ? WHERE id = ?",
+                (now_iso, lead_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "scheduled": len(ids)}
+
+
 def _rows_from_excel(raw: bytes) -> List[Dict[str, str]]:
     """Parse the first sheet of an .xlsx/.xls file into a list of dict rows,
     using the first non-empty row as the header (same shape as csv.DictReader)."""
@@ -1104,6 +1156,7 @@ INDEX_HTML = """<!DOCTYPE html>
         <select id="companyIndustry"><option value="">All industries</option></select>
         <button class="btn secondary" onclick="loadCompanies(1)">Search</button>
         <span style="flex:1"></span>
+        <button class="btn small" onclick="sendAllCompanies()">Send all matching filter</button>
         <button class="btn small danger" id="deleteSelectedBtn" onclick="deleteSelectedCompanies()" disabled>Delete selected (<span id="selectedCount">0</span>)</button>
         <button class="btn small danger" onclick="deleteAllCompanies()">Delete ALL matching filter</button>
       </div>
@@ -1635,6 +1688,21 @@ INDEX_HTML = """<!DOCTYPE html>
         showToast(`Deleted ${data.deleted} companies`, true);
         loadCompanies(1);
         loadIndustries();
+      } catch (e) {
+        showToast(e.message, false);
+      }
+    }
+
+    async function sendAllCompanies() {
+      const params = companyFilterParams();
+      const msg = `Schedule ALL sendable companies matching the current filter for immediate sending? The worker will send them one-by-one with randomized gaps.`;
+      if (!confirm(msg)) return;
+      try {
+        const res = await fetch('/api/send-all?' + params.toString(), { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Send failed');
+        showToast(`Scheduled ${data.scheduled} companies for sending`, true);
+        loadCompanies(companyPageNum);
       } catch (e) {
         showToast(e.message, false);
       }
