@@ -482,6 +482,8 @@ def api_delete_company(lead_id: int, user: dict = Depends(current_user)):
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Lead not found")
         cur.execute("DELETE FROM events WHERE lead_id = ?", (lead_id,))
+        cur.execute("DELETE FROM followup_emails WHERE lead_id = ?", (lead_id,))
+        cur.execute("DELETE FROM emails WHERE lead_id = ?", (lead_id,))
         cur.execute("DELETE FROM leads WHERE id = ? AND user_id = ?", (lead_id, user["id"]))
         deleted = cur.rowcount
         conn.commit()
@@ -510,6 +512,8 @@ def api_delete_companies_bulk(body: DeleteIds, user: dict = Depends(current_user
             return {"ok": True, "deleted": 0}
         owned_ph = ", ".join(["?"] * len(owned_ids))
         cur.execute(f"DELETE FROM events WHERE lead_id IN ({owned_ph})", owned_ids)
+        cur.execute(f"DELETE FROM followup_emails WHERE lead_id IN ({owned_ph})", owned_ids)
+        cur.execute(f"DELETE FROM emails WHERE lead_id IN ({owned_ph})", owned_ids)
         cur.execute(f"DELETE FROM leads WHERE id IN ({owned_ph})", owned_ids)
         deleted = cur.rowcount
         conn.commit()
@@ -549,6 +553,8 @@ def api_delete_companies_all(
         if ids:
             placeholders = ", ".join(["?"] * len(ids))
             cur.execute(f"DELETE FROM events WHERE lead_id IN ({placeholders})", ids)
+            cur.execute(f"DELETE FROM followup_emails WHERE lead_id IN ({placeholders})", ids)
+            cur.execute(f"DELETE FROM emails WHERE lead_id IN ({placeholders})", ids)
             cur.execute(f"DELETE FROM leads WHERE id IN ({placeholders})", ids)
         conn.commit()
     finally:
