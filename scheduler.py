@@ -163,35 +163,37 @@ def build_daily_schedule(user_id: int, schedule_date: Optional[date] = None) -> 
     if auto_send:
         try:
             import json as _json
+
+            # Bulk-mark ALL new leads that already have an industry as enriched (single SQL)
             conn = get_conn()
             cur = conn.cursor()
-            cur.execute("SELECT * FROM leads WHERE status = 'new' AND user_id = ? ORDER BY id", (user_id,))
-            new_leads = cur.fetchall()
+            cur.execute(
+                "UPDATE leads SET status = 'enriched' WHERE status = 'new' AND user_id = ? AND COALESCE(industry, '') != ''",
+                (user_id,),
+            )
+            bulk_count = cur.rowcount
+            conn.commit()
+            conn.close()
+            if bulk_count:
+                logger.info("Bulk-enriched %d new leads with existing industry for user %s", bulk_count, user_id)
+
+            # AI-enrich a limited batch of leads without industry
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM leads WHERE status = 'new' AND user_id = ? AND COALESCE(industry, '') = '' ORDER BY id LIMIT 50",
+                (user_id,),
+            )
+            leads_without_industry = cur.fetchall()
             conn.close()
 
-            # Batch-mark leads that already have an industry as enriched (no AI needed)
-            leads_with_industry = [l for l in new_leads if (l["industry"] or "").strip()]
-            if leads_with_industry:
-                conn = get_conn()
-                cur = conn.cursor()
-                for lead in leads_with_industry:
-                    cur.execute(
-                        "UPDATE leads SET status = 'enriched' WHERE id = ?",
-                        (lead["id"],),
-                    )
-                conn.commit()
-                conn.close()
-                logger.info("Auto-enriched (no AI) %d leads with existing industry for user %s", len(leads_with_industry), user_id)
-
-            # AI-enrich leads without industry (limit per cycle to avoid overload)
-            leads_without_industry = [l for l in new_leads if not (l["industry"] or "").strip()]
             if leads_without_industry:
                 try:
                     from enricher import enrich_lead
                 except Exception:
                     enrich_lead = None
                 if enrich_lead:
-                    for lead in leads_without_industry[:50]:
+                    for lead in leads_without_industry:
                         try:
                             data = enrich_lead(lead)
                             conn = get_conn()
@@ -210,7 +212,6 @@ def build_daily_schedule(user_id: int, schedule_date: Optional[date] = None) -> 
                             conn.close()
                         except Exception as e:
                             logger.warning("Auto-enrich failed for lead %s: %s", lead["id"], e)
-                            # Mark as enriched with default industry so it's not stuck
                             conn = get_conn()
                             cur = conn.cursor()
                             cur.execute("UPDATE leads SET status = 'enriched', industry = 'other' WHERE id = ?", (lead["id"],))

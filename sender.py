@@ -659,13 +659,18 @@ def _run_cycle_for_user(user_id: int) -> None:
     try:
         from_email = verify_sender(user_id)
     except Exception as e:
-        logger.debug("User %s not ready to send (%s); skipping this cycle.", user_id, e)
+        logger.error("User %s not ready to send (%s); skipping this cycle.", user_id, e)
         return
 
-    build_daily_schedule(user_id)
-
+    # Check for already-due leads first (e.g. from "Send all" button)
     due = _due_leads(user_id)
+    if not due:
+        # No due leads — build schedule for today (may enrich new leads)
+        build_daily_schedule(user_id)
+        due = _due_leads(user_id)
+
     if due:
+        logger.info("Found %d due leads for user %s", len(due), user_id)
         try:
             with SMTPSession(user_id) as session:
                 send_due(session, from_email, user_id)
