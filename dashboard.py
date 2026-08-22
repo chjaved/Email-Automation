@@ -430,7 +430,7 @@ def api_companies(
                    last_contact_at, sent_at, scheduled_at, reply_snippet, is_customer
             FROM leads
             {where_sql}
-            ORDER BY id DESC
+            ORDER BY CASE WHEN status IN ('new', 'enriched', 'scheduled') THEN 0 ELSE 1 END, id DESC
             LIMIT ? OFFSET ?
             """,
             params + [page_size, offset],
