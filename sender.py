@@ -534,6 +534,22 @@ def _due_leads(user_id: int) -> List[sqlite3.Row]:
     now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
     conn = get_conn()
     cur = conn.cursor()
+    # Debug: count all scheduled leads for this user (ignoring time)
+    cur.execute(
+        "SELECT COUNT(*) AS cnt FROM leads WHERE status = 'scheduled' AND user_id = ?",
+        (user_id,),
+    )
+    total_scheduled = cur.fetchone()["cnt"]
+    # Debug: show sample scheduled_at values
+    cur.execute(
+        "SELECT scheduled_at FROM leads WHERE status = 'scheduled' AND user_id = ? ORDER BY scheduled_at LIMIT 3",
+        (user_id,),
+    )
+    samples = [r["scheduled_at"] for r in cur.fetchall()]
+    logger.info(
+        "_due_leads: now=%s, total_scheduled=%d, sample_scheduled_at=%s",
+        now, total_scheduled, samples,
+    )
     cur.execute(
         "SELECT * FROM leads WHERE status = 'scheduled' AND scheduled_at IS NOT NULL "
         "AND scheduled_at <= ? AND user_id = ? ORDER BY scheduled_at",
