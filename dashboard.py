@@ -812,6 +812,20 @@ def api_update_settings(body: SettingsUpdate, user: dict = Depends(current_user)
             invalidated = 1
         except Exception as e:
             print(f"[settings] Failed to invalidate cached emails for user {user['id']}: {e}")
+
+    # If auto_send was just enabled, reset the schedule state so the worker
+    # rebuilds the schedule immediately on its next cycle.
+    if body.auto_send_enabled:
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            state_key = f"user:{user['id']}:last_schedule_date"
+            cur.execute("DELETE FROM state WHERE key = ?", (state_key,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
     return {
         "ok": True,
         "settings": get_public_settings(user["id"]),

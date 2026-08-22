@@ -38,14 +38,14 @@ PROFILES = {
         industry="manufacturing",
         start_hour=8,
         end_hour=17,
-        days=[0, 1, 2, 3, 4],
+        days=[0, 1, 2, 3, 4, 5],
         peak_hours=[9, 10, 14],
     ),
     "other": Profile(
         industry="other",
         start_hour=9,
         end_hour=18,
-        days=[0, 1, 2, 3, 4],
+        days=[0, 1, 2, 3, 4, 5],
         peak_hours=[10, 14],
     ),
 }
