@@ -651,16 +651,17 @@ def _all_user_ids() -> List[int]:
         conn.close()
 
 
-def _run_cycle_for_user(user_id: int) -> None:
-    """One send + inbox-check pass for a single user's campaign."""
+def _run_cycle_for_user(user_id: int) -> bool:
+    """One send + inbox-check pass for a single user's campaign.
+    Returns True if the cycle completed (even with 0 sends), False if auth/setup failed."""
     if is_paused(user_id):
-        return
+        return True
 
     try:
         from_email = verify_sender(user_id)
     except Exception as e:
         logger.error("User %s not ready to send (%s); skipping this cycle.", user_id, e)
-        return
+        return False
 
     # Check for already-due leads first (e.g. from "Send all" button)
     due = _due_leads(user_id)
@@ -683,18 +684,35 @@ def _run_cycle_for_user(user_id: int) -> None:
         except Exception as e:
             logger.warning("Inbox check failed for user %s: %s", user_id, e)
 
+    return True
+
 
 def run_sender_loop() -> None:
     """Multi-tenant daemon: each cycle, loops over every registered user and
     sends/checks their own due leads using their own SMTP credentials."""
     logger.info("Starting SMTP sender daemon (multi-tenant)")
 
+    consecutive_failures = 0
     try:
         while True:
+            cycle_ok = True
             for user_id in _all_user_ids():
-                _run_cycle_for_user(user_id)
+                try:
+                    ok = _run_cycle_for_user(user_id)
+                    if not ok:
+                        cycle_ok = False
+                except Exception as e:
+                    logger.error("Cycle failed for user %s: %s", user_id, e)
+                    cycle_ok = False
 
-            time.sleep(SEND_INTERVAL_SECONDS)
+            if cycle_ok:
+                consecutive_failures = 0
+                time.sleep(SEND_INTERVAL_SECONDS)
+            else:
+                consecutive_failures += 1
+                backoff = min(300, SEND_INTERVAL_SECONDS * (2 ** min(consecutive_failures, 5)))
+                logger.warning("Backing off %ds due to %d consecutive auth failures", backoff, consecutive_failures)
+                time.sleep(backoff)
     except KeyboardInterrupt:
         logger.info("Sender daemon stopped by user.")
 

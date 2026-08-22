@@ -1977,21 +1977,4 @@ AUTH_HTML = """<!DOCTYPE html>
 
 
 def start_dashboard() -> None:
-    # Start the sender loop in a background thread so auto-send works
-    # even without a separate worker process (Railway single-service setup).
-    import threading
-    from sender import run_sender_loop
-
-    def _bg_sender():
-        import time
-        time.sleep(5)  # let the web server start first
-        try:
-            run_sender_loop()
-        except Exception as e:
-            print(f"[sender] Background sender loop crashed: {e}")
-
-    t = threading.Thread(target=_bg_sender, daemon=True, name="sender-loop")
-    t.start()
-    print("[dashboard] Background sender loop started in daemon thread")
-
     uvicorn.run(app, host=DASHBOARD_HOST, port=DASHBOARD_PORT, log_level="info")
