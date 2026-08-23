@@ -2,6 +2,7 @@
 import logging
 import os
 import secrets
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -89,11 +90,18 @@ USER_AGENTS = [
 
 
 def setup_logging() -> None:
+    # Railway (and similar platforms) infer log severity from the stream a
+    # message is written to: anything on stderr is flagged as an error in
+    # the dashboard, regardless of the log level in the message text. The
+    # default `logging.StreamHandler()` writes to stderr, which caused
+    # routine INFO-level messages (e.g. "SMTP login OK") to show up as
+    # errors. Write to stdout instead so severity metadata matches the
+    # actual log level.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
             logging.FileHandler(LOG_PATH, encoding="utf-8"),
-            logging.StreamHandler(),
+            logging.StreamHandler(sys.stdout),
         ],
     )
