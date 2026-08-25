@@ -879,19 +879,6 @@ def api_update_settings(body: SettingsUpdate, user: dict = Depends(current_user)
         except Exception as e:
             print(f"[settings] Failed to invalidate cached emails for user {user['id']}: {e}")
 
-    # If auto_send was just enabled, reset the schedule state so the worker
-    # rebuilds the schedule immediately on its next cycle.
-    if body.auto_send_enabled:
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-            state_key = f"user:{user['id']}:last_schedule_date"
-            cur.execute("DELETE FROM state WHERE key = ?", (state_key,))
-            conn.commit()
-            conn.close()
-        except Exception:
-            pass
-
     return {
         "ok": True,
         "settings": get_public_settings(user["id"]),
@@ -1326,7 +1313,7 @@ INDEX_HTML = """<!DOCTYPE html>
           <input type="checkbox" id="setAutoSend" style="width:16px;height:16px;cursor:pointer;" />
           Enable automatic sending
         </label>
-        <span class="desc">When enabled, new leads are auto-enriched and scheduled for sending throughout the day. The worker daemon must be running (Railway <code>worker</code> process).</span>
+        <span class="desc">When enabled, new leads are auto-enriched and sent automatically (respecting the daily cap and gap below). The worker daemon must be running (Railway <code>worker</code> process) with the same <code>DATABASE_URL</code> and <code>SECRET_KEY</code> as the web service.</span>
       </div>
       <div class="form-row">
         <label for="setSendGapMin">Minimum gap between sends (seconds)</label>

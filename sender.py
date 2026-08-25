@@ -650,6 +650,89 @@ def _all_user_ids() -> List[int]:
         conn.close()
 
 
+def _auto_promote_due_leads(user_id: int) -> int:
+    """When auto-send is enabled, promote new/enriched leads and due follow-ups
+    to 'scheduled' (scheduled_at=now) so the send loop picks them up.
+
+    Simple FIFO, respects the per-user daily send cap. No time-of-day windows.
+    """
+    from settings import get_auto_send_enabled, get_daily_send_cap
+    from followups import step_to_wait_days
+
+    if not get_auto_send_enabled(user_id):
+        return 0
+
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    today_iso = now.date().isoformat()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Bulk-enrich new leads that already have an industry (no AI needed)
+    cur.execute(
+        "UPDATE leads SET status = 'enriched' WHERE status = 'new' AND user_id = ? AND COALESCE(industry, '') != ''",
+        (user_id,),
+    )
+    conn.commit()
+
+    daily_cap = get_daily_send_cap(user_id)
+
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND sent_at IS NOT NULL AND substr(sent_at, 1, 10) = ?",
+        (user_id, today_iso),
+    )
+    sent_today = cur.fetchone()["n"]
+
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND status = 'scheduled'",
+        (user_id,),
+    )
+    already_scheduled = cur.fetchone()["n"]
+
+    remaining = max(0, daily_cap - sent_today - already_scheduled)
+    if remaining <= 0:
+        conn.close()
+        return 0
+
+    cur.execute(
+        "SELECT id FROM leads WHERE status = 'enriched' AND user_id = ? ORDER BY id LIMIT ?",
+        (user_id, remaining),
+    )
+    ids = [r["id"] for r in cur.fetchall()]
+
+    if len(ids) < remaining:
+        cur.execute(
+            "SELECT * FROM leads WHERE status = 'sent' AND sequence_step BETWEEN 1 AND 3 "
+            "AND last_contact_at IS NOT NULL AND user_id = ? ORDER BY last_contact_at",
+            (user_id,),
+        )
+        for lead in cur.fetchall():
+            if len(ids) >= remaining:
+                break
+            try:
+                wait_days = step_to_wait_days(lead["sequence_step"])
+                last_contact = datetime.fromisoformat(lead["last_contact_at"])
+                if (now - last_contact).days >= wait_days:
+                    ids.append(lead["id"])
+            except Exception:
+                continue
+
+    if not ids:
+        conn.close()
+        return 0
+
+    for lead_id in ids:
+        cur.execute(
+            "UPDATE leads SET status = 'scheduled', scheduled_at = ? WHERE id = ?",
+            (now.isoformat(), lead_id),
+        )
+    conn.commit()
+    conn.close()
+    logger.info("Auto-promoted %d leads to scheduled for user %s", len(ids), user_id)
+    return len(ids)
+
+
 def _run_cycle_for_user(user_id: int) -> bool:
     """One send + inbox-check pass for a single user's campaign.
     Returns True if the cycle completed (even with 0 sends), False if auth/setup failed."""
@@ -662,8 +745,12 @@ def _run_cycle_for_user(user_id: int) -> bool:
         logger.error("User %s not ready to send (%s); skipping this cycle.", user_id, e)
         return False
 
-    # Just send whatever is due — no scheduler
+    # Just send whatever is due — auto-promote new leads first if enabled
     due = _due_leads(user_id)
+    if not due:
+        _auto_promote_due_leads(user_id)
+        due = _due_leads(user_id)
+
     if due:
         logger.info("Found %d due leads for user %s", len(due), user_id)
         try:
