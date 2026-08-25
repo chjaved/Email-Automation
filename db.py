@@ -121,6 +121,7 @@ def _add_missing_columns_sqlite(conn) -> None:
             ("is_customer", "INTEGER", "0"),
             ("gmail_message_id_header", "TEXT", "NULL"),
             ("user_id", "INTEGER", "NULL"),
+            ("bounce_reason", "TEXT", "NULL"),
         ],
         "user_settings": [
             ("cc_enabled", "INTEGER", "1"),
@@ -162,6 +163,7 @@ def _add_missing_columns_postgres(conn) -> None:
             ("is_customer", "INTEGER", "0"),
             ("gmail_message_id_header", "TEXT", "NULL"),
             ("user_id", "INTEGER", "NULL"),
+            ("bounce_reason", "TEXT", "NULL"),
         ],
         "user_settings": [
             ("cc_enabled", "INTEGER", "1"),

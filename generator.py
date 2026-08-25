@@ -350,7 +350,7 @@ def _build_signature(user_id: int) -> str:
 
 def _assemble_body(company_name: str, industry: str, personalisation: Dict[str, str], user_id: int = 0) -> str:
     profile = _industry_profile(industry)
-    greeting = "Dear Sir/Madam,"
+    greeting = "Dear Tan Sir/Datuk/Datin/Sir/Madam,"
 
     intro = (
         f"I'm writing from Agensi Pekerjaan Online Jobs Sdn. Bhd. (AP Online "

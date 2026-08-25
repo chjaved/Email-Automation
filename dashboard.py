@@ -427,7 +427,7 @@ def api_companies(
         cur.execute(
             f"""
             SELECT id, company_name, email, industry, location, status, sequence_step,
-                   last_contact_at, sent_at, scheduled_at, reply_snippet, is_customer
+                   last_contact_at, sent_at, scheduled_at, reply_snippet, is_customer, bounce_reason
             FROM leads
             {where_sql}
             ORDER BY CASE WHEN status IN ('new', 'enriched', 'scheduled') THEN 0 ELSE 1 END, id DESC
@@ -1614,7 +1614,7 @@ INDEX_HTML = """<!DOCTYPE html>
           <td>${r.company_name || ''}</td>
           <td>${r.email || ''}</td>
           <td>${r.industry || ''}</td>
-          <td>${statusBadge(r.status || 'new')}</td>
+          <td>${r.status === 'bounced' && r.bounce_reason ? `<span title="${r.bounce_reason.replace(/"/g,'&quot;')}">${statusBadge(r.status || 'new')}</span>` : statusBadge(r.status || 'new')}</td>
           <td>${r.step_label}</td>
           <td>${r.last_contact_at ? r.last_contact_at.substring(0,16) : ''}</td>
           <td>${r.scheduled_at ? r.scheduled_at.substring(0,16) : ''}</td>

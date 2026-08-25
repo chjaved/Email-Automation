@@ -464,6 +464,41 @@ def _timedelta(days: int):
     return timedelta(days=days)
 
 
+def _extract_bounce_reason(body: str) -> str:
+    """Pull a short, human-readable reason out of a bounce (DSN) message body.
+
+    Looks for common patterns like an SMTP status line ("552 ... mailbox not
+    found") or a diagnostic-code header, falling back to the first
+    non-empty line of the message.
+    """
+    if not body:
+        return "Unknown bounce reason"
+
+    import re as _re
+
+    # e.g. "550 5.1.1 The email account that you tried to reach does not exist"
+    smtp_match = _re.search(r"\b([45]\d{2}[ -][\d.]+.{0,160})", body)
+    if smtp_match:
+        return " ".join(smtp_match.group(1).split())[:300]
+
+    # e.g. "Diagnostic-Code: smtp; 550 5.1.1 ... "
+    diag_match = _re.search(r"Diagnostic-Code:\s*(.+)", body, _re.IGNORECASE)
+    if diag_match:
+        return " ".join(diag_match.group(1).split())[:300]
+
+    # e.g. "Action: failed" / "Status: 5.1.1" lines commonly precede the reason
+    status_match = _re.search(r"Status:\s*([\d.]+.{0,160})", body, _re.IGNORECASE)
+    if status_match:
+        return " ".join(status_match.group(1).split())[:300]
+
+    for line in body.splitlines():
+        line = line.strip()
+        if line and not line.startswith(("--", "Content-", "MIME-")):
+            return line[:300]
+
+    return "Unknown bounce reason"
+
+
 def detect_bounces_and_replies(user_id: int, from_email: str) -> None:
     """Very lightweight inbox scan: mark leads as bounced/replied/unsubscribed."""
     messages = _fetch_recent_inbox_messages(user_id, days=7)
@@ -490,14 +525,15 @@ def detect_bounces_and_replies(user_id: int, from_email: str) -> None:
             found = _re.findall(
                 r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", m["body"]
             )
+            reason = _extract_bounce_reason(m["body"])
             for addr in found:
                 if addr.lower() == from_email_lower or addr.lower() == get_smtp_user(user_id).lower():
                     continue
                 lead_id = sent_leads.get(addr.lower())
                 if lead_id:
-                    set_lead_status(lead_id, "bounced")
-                    log_event(lead_id, "bounced")
-                    logger.info("Marked lead %s as bounced (%s)", lead_id, addr)
+                    set_lead_status(lead_id, "bounced", bounce_reason=reason)
+                    log_event(lead_id, "bounced", reason)
+                    logger.info("Marked lead %s as bounced (%s): %s", lead_id, addr, reason)
             continue
 
         # Reply from an actual recipient
