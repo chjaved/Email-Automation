@@ -63,10 +63,13 @@ def get_credentials(mailbox: Dict[str, Any]):
 # Warmup / cap logic
 # ---------------------------------------------------------------------------
 def get_current_cap(mailbox: Dict[str, Any]) -> int:
-    """Calculate current daily cap based on warmup ramp."""
+    """Calculate current daily cap based on warmup ramp.
+
+    warmup_day is the number of days the mailbox has been active (0 = fully warmed).
+    """
     if mailbox["warmup_day"] == 0:
         return mailbox["daily_cap"]
-    days_active = (date.today() - date.fromisoformat(str(mailbox["warmup_day"]))).days
+    days_active = int(mailbox["warmup_day"])
     cap = 50  # default for the first days
     for day_threshold, cap_value in sorted(WARMUP_RAMP.items()):
         if days_active >= day_threshold:

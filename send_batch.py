@@ -15,7 +15,7 @@ from pathlib import Path
 from config import setup_logging
 from db import get_conn, insert_returning_id, log_event, init_db
 from generator import _ai_personalisation, _assemble_body, _build_subject, _normalise_industry
-from sender import SMTPSession, _build_message, set_lead_status, verify_sender
+from sender import set_lead_status
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 NA_VALUES = {"", "not publicly available", "n/a", "na", "none", "-"}
@@ -136,7 +136,10 @@ def _upsert_lead(company: str, email: str, industry: str) -> int:
 
 
 def send_batch(csv_path: Path, limit: int, gap_seconds: int, dry_run: bool, force: bool) -> None:
-    init_db()
+    raise NotImplementedError(
+        "send_batch live sending is disabled in the multi-mailbox version. "
+        "Use `python main.py run` or the dashboard's Send now button."
+    )
     skip_emails = set() if force else _already_contacted_emails()
     targets = load_targets(csv_path, limit, skip_emails)
     if not targets:
