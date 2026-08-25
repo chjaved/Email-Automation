@@ -756,7 +756,9 @@ def _auto_promote_due_leads(user_id: int) -> int:
 def _run_cycle_for_user(user_id: int) -> bool:
     """One send + inbox-check pass for a single user's campaign.
     Returns True if the cycle completed (even with 0 sends), False if auth/setup failed."""
-    if is_paused(user_id):
+    paused = is_paused(user_id)
+    logger.info("Cycle start for user %s (paused=%s)", user_id, paused)
+    if paused:
         return True
 
     try:
