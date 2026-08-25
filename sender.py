@@ -660,6 +660,7 @@ def _auto_promote_due_leads(user_id: int) -> int:
     from followups import step_to_wait_days
 
     if not get_auto_send_enabled(user_id):
+        logger.info("Auto-promote: auto_send_enabled is OFF for user %s", user_id)
         return 0
 
     tz = ZoneInfo(TIMEZONE)
@@ -674,6 +675,7 @@ def _auto_promote_due_leads(user_id: int) -> int:
         "UPDATE leads SET status = 'enriched' WHERE status = 'new' AND user_id = ? AND COALESCE(industry, '') != ''",
         (user_id,),
     )
+    bulk_enriched = cur.rowcount
     conn.commit()
 
     daily_cap = get_daily_send_cap(user_id)
@@ -690,7 +692,25 @@ def _auto_promote_due_leads(user_id: int) -> int:
     )
     already_scheduled = cur.fetchone()["n"]
 
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND status = 'new'",
+        (user_id,),
+    )
+    new_count = cur.fetchone()["n"]
+
+    cur.execute(
+        "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND status = 'enriched'",
+        (user_id,),
+    )
+    enriched_count = cur.fetchone()["n"]
+
     remaining = max(0, daily_cap - sent_today - already_scheduled)
+    logger.info(
+        "Auto-promote user %s: daily_cap=%d sent_today=%d already_scheduled=%d remaining=%d "
+        "bulk_enriched_now=%d new_count=%d enriched_count=%d",
+        user_id, daily_cap, sent_today, already_scheduled, remaining,
+        bulk_enriched, new_count, enriched_count,
+    )
     if remaining <= 0:
         conn.close()
         return 0
