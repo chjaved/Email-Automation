@@ -3,7 +3,7 @@ import csv
 import io
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import uvicorn
@@ -14,8 +14,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 from auth import create_session_token, hash_password, verify_password, verify_session_token
-from config import DASHBOARD_HOST, DASHBOARD_PORT, DB_PATH, FOLLOWUP_SCHEDULE, TIMEZONE
+from config import DASHBOARD_HOST, DASHBOARD_PORT, DB_PATH, FOLLOWUP_SCHEDULE, MAILBOX_POOL, TIMEZONE
 from db import get_conn, init_db
+from mailboxes import get_current_cap
 from send_batch import pick_emails
 from settings import (
     add_attachment,
@@ -355,6 +356,54 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
         "message": "Campaign healthy" if (not paused and bounce_rate < 0.03) else ("Paused" if paused else f"Bounce rate {bounce_rate:.2%}"),
     }
 
+    # Per-mailbox send stats and warmup caps
+    today_iso = date.today().isoformat()
+    cur.execute(
+        """
+        SELECT e.mailbox, COUNT(*) AS total_sent,
+               SUM(CASE WHEN substr(e.created_at, 1, 10) = ? THEN 1 ELSE 0 END) AS sent_today
+        FROM events e
+        JOIN leads l ON e.lead_id = l.id
+        WHERE e.event_type = 'sent' AND l.user_id = ?
+        GROUP BY e.mailbox
+        """,
+        (today_iso, user_id),
+    )
+    stats_by_mailbox: Dict[str, Dict[str, int]] = {}
+    for row in cur.fetchall():
+        mb_name = row["mailbox"] or ""
+        stats_by_mailbox[mb_name] = {
+            "total_sent": row["total_sent"],
+            "sent_today": row["sent_today"],
+        }
+
+    mailbox_stats = []
+    for m in MAILBOX_POOL:
+        sent_today = stats_by_mailbox.get(m["name"], {}).get("sent_today", 0)
+        total_sent = stats_by_mailbox.get(m["name"], {}).get("total_sent", 0)
+        cap_today = get_current_cap(m)
+        if cap_today == 0:
+            color = "red"
+        else:
+            pct = sent_today / cap_today
+            color = "green" if pct < 0.8 else ("orange" if pct < 1.0 else "red")
+        mailbox_stats.append(
+            {
+                "name": m["name"],
+                "address": m["alias"],
+                "sent_today": sent_today,
+                "total_sent": total_sent,
+                "cap_today": cap_today,
+                "active": m["active"],
+                "color": color,
+            }
+        )
+
+    mailbox_caps = [
+        {"name": m["name"], "address": m["alias"], "cap_today": get_current_cap(m), "active": m["active"]}
+        for m in MAILBOX_POOL
+    ]
+
     return {
         "stats": {
             "total": total,
@@ -372,6 +421,8 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
         "activity": activity,
         "replies": replies_inbox,
         "health": health,
+        "mailbox_stats": mailbox_stats,
+        "mailbox_caps": mailbox_caps,
     }
 
 
@@ -1077,6 +1128,8 @@ INDEX_HTML = """<!DOCTYPE html>
 
     <div class="cards" id="cards"></div>
 
+    <div class="section" id="mailboxHealth" style="margin: 20px 0;"></div>
+
     <div class="grid">
       <div class="section">
         <h3>Sent emails per day (last 30 days)</h3>
@@ -1763,6 +1816,31 @@ INDEX_HTML = """<!DOCTYPE html>
       h.className = 'banner ' + (d.health.ok ? 'green' : 'red');
       h.textContent = d.health.message + ' — bounce rate ' + (d.health.bounce_rate * 100).toFixed(2) + '%';
       document.getElementById('resumeRow').style.display = d.health.paused ? 'block' : 'none';
+
+      // Mailbox Health
+      const mbEl = document.getElementById('mailboxHealth');
+      if (mbEl) {
+        let totalCap = 0;
+        let totalSent = 0;
+        const rows = d.mailbox_stats.map(m => {
+          totalCap += m.cap_today;
+          totalSent += m.sent_today;
+          const pct = m.cap_today ? Math.min(100, (m.sent_today / m.cap_today) * 100).toFixed(1) : 0;
+          return `<div style="display:flex;align-items:center;justify-content:space-between;margin:6px 0;">
+            <div style="flex:1;">
+              <strong>${m.name}</strong> <span style="color:#6b7280;font-size:0.9em;">${m.address}</span>
+              <div style="background:#e5e7eb;border-radius:4px;height:10px;margin-top:4px;">
+                <div style="width:${pct}%;background:${m.color};height:10px;border-radius:4px;"></div>
+              </div>
+            </div>
+            <div style="margin-left:16px;font-weight:bold;${m.color === 'red' ? 'color:#ef4444;' : m.color === 'orange' ? 'color:#f59e0b;' : 'color:#22c55e;'}">${m.sent_today} / ${m.cap_today}</div>
+          </div>`;
+        }).join('') || '<p>No active mailboxes configured.</p>';
+        mbEl.innerHTML = `<h3>Mailbox Health</h3>${rows}
+          <div style="display:flex;justify-content:space-between;margin-top:12px;padding-top:12px;border-top:1px solid #e5e7eb;font-weight:bold;">
+            <span>Total</span><span>${totalSent} / ${totalCap}</span>
+          </div>`;
+      }
 
       // Cards
       const stats = d.stats;

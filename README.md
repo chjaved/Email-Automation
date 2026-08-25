@@ -19,13 +19,24 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` and add your `OPENAI_API_KEY`, `SMTP_USER`, `SMTP_PASSWORD` (Gmail App Password), and optionally `FROM_ALIAS`.
+Edit `.env` and add your `OPENAI_API_KEY`. Multi-mailbox OAuth sending is configured in `config.py`.
 
-3. Set up Gmail SMTP sending:
+3. Set up Gmail OAuth for the 3 mailboxes:
 
-- Enable 2-Step Verification on the Gmail account used for `SMTP_USER`.
-- Generate an [App Password](https://myaccount.google.com/apppasswords) and put it in `SMTP_PASSWORD`.
-- (Optional) Add a **Send mail as** alias in Gmail settings (Settings > Accounts > Send mail as) and set `FROM_ALIAS` in `.env` to that alias. Emails will be sent through `SMTP_USER`'s SMTP session but display as `FROM_ALIAS`.
+- Create a Google Cloud project and enable the **Gmail API**.
+- Download one OAuth Desktop app `credentials.json` per mailbox:
+  - `credentials_info.json` for `info@iprosedutech.com.my`
+  - `credentials_contact.json` for `contact@iprosedutech.com.my`
+  - `credentials_ipros.json` for `ipros@iprosedutech.com.my`
+- Run the OAuth flow once per mailbox to generate token files:
+
+```bash
+python main.py auth-mailboxes
+```
+
+This creates `token_info.json`, `token_contact.json`, and `token_ipros.json`.
+
+- On Railway/deployment, upload the `token_*.json` files alongside the code.
 - Test the setup: `python main.py test-send you@example.com`
 
 4. Import leads:
@@ -89,7 +100,8 @@ Edit `.env`:
 
 ## Notes
 
-- Sending uses Gmail SMTP (`smtplib`), not the Gmail API - no OAuth/`credentials.json` needed.
+- Sending now uses the Gmail API with OAuth credentials. The active mailbox pool, warmup ramp, and daily caps are defined in `config.py` and `mailboxes.py`.
+- The sender rotates round-robin to the active mailbox with the fewest sends today that is under its warmup-adjusted daily cap.
 - `do_not_email.csv` is created automatically and stores unsubscribed/bounced email addresses.
 - All runtime data is stored in `campaign.db` and logs are written to `campaign.log`.
 

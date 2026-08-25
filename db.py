@@ -122,6 +122,10 @@ def _add_missing_columns_sqlite(conn) -> None:
             ("gmail_message_id_header", "TEXT", "NULL"),
             ("user_id", "INTEGER", "NULL"),
             ("bounce_reason", "TEXT", "NULL"),
+            ("sent_from_mailbox", "TEXT", "NULL"),
+        ],
+        "events": [
+            ("mailbox", "TEXT", "NULL"),
         ],
         "user_settings": [
             ("cc_enabled", "INTEGER", "1"),
@@ -164,6 +168,10 @@ def _add_missing_columns_postgres(conn) -> None:
             ("gmail_message_id_header", "TEXT", "NULL"),
             ("user_id", "INTEGER", "NULL"),
             ("bounce_reason", "TEXT", "NULL"),
+            ("sent_from_mailbox", "TEXT", "NULL"),
+        ],
+        "events": [
+            ("mailbox", "TEXT", "NULL"),
         ],
         "user_settings": [
             ("cc_enabled", "INTEGER", "1"),
@@ -211,7 +219,8 @@ CREATE TABLE IF NOT EXISTS leads (
     is_customer INTEGER DEFAULT 0,
     gmail_message_id TEXT,
     gmail_thread_id TEXT,
-    gmail_message_id_header TEXT
+    gmail_message_id_header TEXT,
+    sent_from_mailbox TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_user ON leads(email, user_id);
 
@@ -239,6 +248,7 @@ CREATE TABLE IF NOT EXISTS events (
     lead_id INTEGER,
     event_type TEXT,
     details TEXT,
+    mailbox TEXT,
     created_at TEXT,
     FOREIGN KEY (lead_id) REFERENCES leads(id)
 );
@@ -506,14 +516,14 @@ def init_db() -> None:
     conn.close()
 
 
-def log_event(lead_id: int, event_type: str, details: str = "") -> None:
+def log_event(lead_id: int, event_type: str, details: str = "", mailbox: str = "") -> None:
     from datetime import datetime, timezone
 
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO events (lead_id, event_type, details, created_at) VALUES (?, ?, ?, ?)",
-        (lead_id, event_type, details, datetime.now(timezone.utc).isoformat()),
+        "INSERT INTO events (lead_id, event_type, details, mailbox, created_at) VALUES (?, ?, ?, ?, ?)",
+        (lead_id, event_type, details, mailbox, datetime.now(timezone.utc).isoformat()),
     )
     conn.commit()
     conn.close()

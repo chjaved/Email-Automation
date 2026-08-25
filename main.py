@@ -7,11 +7,12 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from config import DASHBOARD_HOST, DASHBOARD_PORT, LOG_PATH, setup_logging, TIMEZONE
+from config import DASHBOARD_HOST, DASHBOARD_PORT, LOG_PATH, MAILBOX_POOL, setup_logging, TIMEZONE
 from db import init_db
 from enricher import run_enrichment
 from generator import preview_emails
 from leads import ingest_csv
+from mailboxes import get_credentials
 from sender import reset_pause, run_sender_loop, send_test_email
 
 
@@ -142,6 +143,20 @@ def cmd_test_send(args: argparse.Namespace) -> None:
     print(f"  Subject: {result['subject']}")
 
 
+def cmd_auth_mailboxes(args: argparse.Namespace) -> None:
+    """Run OAuth flow once for each configured mailbox to generate token files."""
+    for mailbox in MAILBOX_POOL:
+        if not mailbox["active"]:
+            print(f"Skipping {mailbox['name']} (inactive)")
+            continue
+        print(f"Authenticating {mailbox['name']} ({mailbox['address']})...")
+        try:
+            get_credentials(mailbox)
+            print(f"  OK - token saved to {mailbox['token']}")
+        except Exception as e:
+            print(f"  FAILED: {e}", file=sys.stderr)
+
+
 def cmd_dashboard(args: argparse.Namespace) -> None:
     from dashboard import start_dashboard
 
@@ -180,6 +195,9 @@ def main(argv: list = None) -> int:
     p_test.add_argument("--company", default="Test Company", help="Recipient company name")
     p_test.add_argument("--industry", default="cleaning", help="Industry (e.g. cleaning, construction, hotel)")
     p_test.set_defaults(func=cmd_test_send)
+
+    p_auth = sub.add_parser("auth-mailboxes", help="Run OAuth flow for all configured mailboxes")
+    p_auth.set_defaults(func=cmd_auth_mailboxes)
 
     p_dashboard = sub.add_parser("dashboard", help="Start web dashboard")
     p_dashboard.set_defaults(func=cmd_dashboard)

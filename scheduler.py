@@ -6,12 +6,18 @@ from datetime import date, datetime, timedelta, time
 from typing import List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-from config import DAILY_CAP, FOLLOWUP_SCHEDULE, MIN_GAP_SECONDS, TIMEZONE
+from config import DAILY_CAP, FOLLOWUP_SCHEDULE, MAILBOX_POOL, MIN_GAP_SECONDS, TIMEZONE
 from db import get_conn
 from followups import get_followup_body, is_final, step_to_wait_days
 from generator import generate_for_lead
 from industry_profiles import get_profile
+from mailboxes import get_current_cap
 from settings import get_auto_send_enabled, get_daily_send_cap
+
+
+def get_total_daily_cap() -> int:
+    """Total allowed sends today across all active mailboxes, respecting warmup."""
+    return sum(get_current_cap(m) for m in MAILBOX_POOL if m["active"])
 
 logger = logging.getLogger(__name__)
 
@@ -222,8 +228,8 @@ def build_daily_schedule(user_id: int, schedule_date: Optional[date] = None) -> 
 
     logger.info("Building schedule for user %s on %s", user_id, today_iso)
 
-    # Use per-user daily cap, fall back to global DAILY_CAP
-    daily_cap = get_daily_send_cap(user_id) if auto_send else DAILY_CAP
+    # Use total daily cap across all active warmed-up mailboxes
+    daily_cap = get_total_daily_cap() if auto_send else DAILY_CAP
 
     # Count how many emails already sent today for this user
     conn = get_conn()

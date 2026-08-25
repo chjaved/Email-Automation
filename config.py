@@ -32,9 +32,58 @@ GMAIL_TOKEN = BASE_DIR / "token.json"
 
 TIMEZONE = os.getenv("TIMEZONE", "Asia/Kuala_Lumpur")
 DAILY_CAP = int(os.getenv("DAILY_CAP", "20"))
-FROM_ALIAS = os.getenv("FROM_ALIAS", "").strip()
+FROM_ALIAS = os.getenv("FROM_ALIAS", "").strip()  # legacy single-alias fallback
 FROM_DISPLAY_NAME = os.getenv("FROM_DISPLAY_NAME", "Javed Jabbar").strip()
 MIN_GAP_SECONDS = int(os.getenv("MIN_GAP_SECONDS", "90"))
+
+# Gmail OAuth scopes used for multi-mailbox sending and bounce/reply detection
+GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.readonly",
+]
+
+# Multi-mailbox pool: emails are sent round-robin across active mailboxes,
+# respecting each mailbox's daily cap and warmup ramp schedule.
+MAILBOX_POOL = [
+    {
+        "name": "info",
+        "address": "info@iprosedutech.com.my",
+        "alias": "fwiv-ai@iprosedutech.com.my",
+        "credentials": BASE_DIR / "credentials_info.json",
+        "token": BASE_DIR / "token_info.json",
+        "daily_cap": 100,
+        "active": True,
+        "warmup_day": 0,
+    },
+    {
+        "name": "contact",
+        "address": "contact@iprosedutech.com.my",
+        "alias": "fwiv-ai-sys@iprosedutech.com.my",
+        "credentials": BASE_DIR / "credentials_contact.json",
+        "token": BASE_DIR / "token_contact.json",
+        "daily_cap": 50,
+        "active": True,
+        "warmup_day": 1,
+    },
+    {
+        "name": "ipros",
+        "address": "ipros@iprosedutech.com.my",
+        "alias": "fwiv-ai-portal@iprosedutech.com.my",
+        "credentials": BASE_DIR / "credentials_ipros.json",
+        "token": BASE_DIR / "token_ipros.json",
+        "daily_cap": 50,
+        "active": True,
+        "warmup_day": 1,
+    },
+]
+
+# Warmup ramp: days since activation -> maximum allowed daily cap for that day
+WARMUP_RAMP = {
+    0: 50,
+    4: 80,
+    8: 150,
+    15: 500,
+}
 
 # SMTP (Gmail) settings
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
