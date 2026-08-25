@@ -434,11 +434,20 @@ def _check_inbox(user_id: int, from_email: str) -> None:
 
 
 def _all_user_ids() -> List[int]:
+    """Return every user that is registered or owns leads."""
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM users ORDER BY id")
-        return [row["id"] for row in cur.fetchall()]
+        cur.execute(
+            """
+            SELECT DISTINCT user_id FROM (
+                SELECT id AS user_id FROM users
+                UNION
+                SELECT user_id FROM leads WHERE user_id IS NOT NULL
+            ) ORDER BY user_id
+            """
+        )
+        return [row["user_id"] for row in cur.fetchall()]
     finally:
         conn.close()
 
