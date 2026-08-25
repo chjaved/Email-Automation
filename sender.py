@@ -757,8 +757,19 @@ def _run_cycle_for_user(user_id: int) -> bool:
     """One send + inbox-check pass for a single user's campaign.
     Returns True if the cycle completed (even with 0 sends), False if auth/setup failed."""
     paused = is_paused(user_id)
-    logger.info("Cycle start for user %s (paused=%s)", user_id, paused)
     if paused:
+        return True
+
+    # Check for work before touching SMTP at all — avoids logging in for
+    # idle accounts that have nothing to send and no inbox check due.
+    due = _due_leads(user_id)
+    if not due:
+        _auto_promote_due_leads(user_id)
+        due = _due_leads(user_id)
+
+    inbox_due = _should_check_inbox(user_id)
+
+    if not due and not inbox_due:
         return True
 
     try:
@@ -766,12 +777,6 @@ def _run_cycle_for_user(user_id: int) -> bool:
     except Exception as e:
         logger.error("User %s not ready to send (%s); skipping this cycle.", user_id, e)
         return False
-
-    # Just send whatever is due — auto-promote new leads first if enabled
-    due = _due_leads(user_id)
-    if not due:
-        _auto_promote_due_leads(user_id)
-        due = _due_leads(user_id)
 
     if due:
         logger.info("Found %d due leads for user %s", len(due), user_id)
@@ -781,7 +786,7 @@ def _run_cycle_for_user(user_id: int) -> bool:
         except Exception as e:
             logger.error("Send cycle failed for user %s: %s", user_id, e)
 
-    if _should_check_inbox(user_id):
+    if inbox_due:
         try:
             _check_inbox(user_id, from_email)
         except Exception as e:

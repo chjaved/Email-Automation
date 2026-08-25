@@ -115,13 +115,6 @@ def get_signature(user_id: int) -> dict:
 
 def get_auto_send_enabled(user_id: int) -> bool:
     row = _get_row(user_id)
-    import logging
-    logging.getLogger(__name__).info(
-        "get_auto_send_enabled(user_id=%s): row_exists=%s raw_value=%r type=%s",
-        user_id, row is not None,
-        row["auto_send_enabled"] if row else None,
-        type(row["auto_send_enabled"]).__name__ if row else None,
-    )
     return bool(row["auto_send_enabled"]) if row and row["auto_send_enabled"] is not None else False
 
 

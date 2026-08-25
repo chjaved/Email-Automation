@@ -846,6 +846,13 @@ def api_get_settings(user: dict = Depends(current_user)):
     return get_public_settings(user["id"])
 
 
+@app.post("/api/resume")
+def api_resume_campaign(user: dict = Depends(current_user)):
+    from sender import reset_pause
+    reset_pause(user["id"])
+    return {"ok": True}
+
+
 @app.post("/api/settings")
 def api_update_settings(body: SettingsUpdate, user: dict = Depends(current_user)):
     ai_changed = update_settings(
@@ -1064,6 +1071,9 @@ INDEX_HTML = """<!DOCTYPE html>
     </div>
 
     <div id="health" class="banner">Loading...</div>
+    <div id="resumeRow" style="display:none;margin-bottom:16px;">
+      <button class="btn" onclick="resumeCampaign()">Resume Campaign</button>
+    </div>
 
     <div class="cards" id="cards"></div>
 
@@ -1441,6 +1451,18 @@ INDEX_HTML = """<!DOCTYPE html>
       _renderAttachmentList(s);
     }
 
+    async function resumeCampaign() {
+      try {
+        const res = await fetch('/api/resume', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Resume failed');
+        showToast('Campaign resumed', true);
+        load();
+      } catch (e) {
+        showToast(e.message, false);
+      }
+    }
+
     async function saveSettings() {
       const body = {
         smtp_user: document.getElementById('setSmtpUser').value.trim(),
@@ -1740,6 +1762,7 @@ INDEX_HTML = """<!DOCTYPE html>
       const h = document.getElementById('health');
       h.className = 'banner ' + (d.health.ok ? 'green' : 'red');
       h.textContent = d.health.message + ' — bounce rate ' + (d.health.bounce_rate * 100).toFixed(2) + '%';
+      document.getElementById('resumeRow').style.display = d.health.paused ? 'block' : 'none';
 
       // Cards
       const stats = d.stats;
