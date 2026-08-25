@@ -111,7 +111,7 @@ def verify_sender(user_id: int) -> str:
         )
     with SMTPSession(user_id):
         pass
-    logger.info("SMTP login OK for %s; sending as %s", get_smtp_user(user_id), from_addr)
+    logger.info("SMTP login OK for %s (user_id=%s); sending as %s", get_smtp_user(user_id), user_id, from_addr)
     return from_addr
 
 

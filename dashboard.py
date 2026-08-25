@@ -1964,4 +1964,13 @@ AUTH_HTML = """<!DOCTYPE html>
 
 
 def start_dashboard() -> None:
+    import os
+    import re as _re
+    from db import USE_POSTGRES
+    if USE_POSTGRES:
+        url = os.getenv("DATABASE_URL", "")
+        safe = _re.sub(r"://[^@]+@", "://***:***@", url)
+        print(f"[db] Using Postgres: {safe}")
+    else:
+        print("[db] WARNING: Using local SQLite (DATABASE_URL not set).")
     uvicorn.run(app, host=DASHBOARD_HOST, port=DASHBOARD_PORT, log_level="info")

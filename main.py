@@ -1,6 +1,7 @@
 """CLI entry point for campaign-engine."""
 import argparse
 import logging
+import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -44,6 +45,16 @@ def cmd_preview(args: argparse.Namespace) -> None:
 
 def cmd_run(args: argparse.Namespace) -> None:
     print("Starting campaign engine daemon. Press Ctrl+C to stop.")
+    import os
+    from db import USE_POSTGRES
+    if USE_POSTGRES:
+        url = os.getenv("DATABASE_URL", "")
+        # Mask credentials, show only host/db for verification
+        safe = re.sub(r"://[^@]+@", "://***:***@", url)
+        print(f"[db] Using Postgres: {safe}")
+    else:
+        print("[db] WARNING: Using local SQLite (DATABASE_URL not set). "
+              "This worker will NOT see data from the web service's Postgres database.")
     run_sender_loop()
 
 
