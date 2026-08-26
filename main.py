@@ -8,7 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from config import DASHBOARD_HOST, DASHBOARD_PORT, LOG_PATH, MAILBOX_POOL, setup_logging, TIMEZONE
-from db import init_db
+from db import get_conn, init_db
 from enricher import run_enrichment
 from generator import preview_emails
 from leads import ingest_csv
@@ -131,6 +131,21 @@ def cmd_reset_pause(args: argparse.Namespace) -> None:
     print("Campaign pause reset.")
 
 
+def cmd_clean_bounced(args: argparse.Namespace) -> None:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM leads WHERE user_id = ? AND status = 'bounced'",
+            (args.user_id,),
+        )
+        deleted = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"Deleted {deleted} bounced leads for user {args.user_id}.")
+
+
 def cmd_test_send(args: argparse.Namespace) -> None:
     result = send_test_email(
         to_address=args.email,
@@ -189,6 +204,10 @@ def main(argv: list = None) -> int:
 
     p_reset = sub.add_parser("reset-pause", help="Resume a paused campaign")
     p_reset.set_defaults(func=cmd_reset_pause)
+
+    p_clean = sub.add_parser("clean-bounced", help="Delete all leads that already bounced")
+    p_clean.add_argument("--user-id", type=int, default=2, help="User whose bounced leads to clean")
+    p_clean.set_defaults(func=cmd_clean_bounced)
 
     p_test = sub.add_parser("test-send", help="Send a single test email using the current template")
     p_test.add_argument("email", help="Recipient email address")
