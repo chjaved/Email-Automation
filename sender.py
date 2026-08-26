@@ -117,7 +117,11 @@ def pause_campaign(user_id: int, reason: str) -> None:
     _set_state(_state_key(user_id, "paused"), "1")
 
 
-def reset_pause(user_id: int) -> None:
+def reset_pause(user_id: Optional[int] = None) -> None:
+    if user_id is None:
+        for uid in _all_user_ids():
+            _set_state(_state_key(uid, "paused"), "0")
+        return
     _set_state(_state_key(user_id, "paused"), "0")
 
 
