@@ -2,8 +2,10 @@
 import base64
 import email.utils
 import html as html_lib
+import json
 import logging
 import mimetypes
+import os
 import re
 import sqlite3
 from datetime import date
@@ -37,25 +39,56 @@ logger = logging.getLogger(__name__)
 # OAuth credentials
 # ---------------------------------------------------------------------------
 def get_credentials(mailbox: Dict[str, Any]):
-    """Load OAuth credentials for a specific mailbox, refreshing or running
-    the local OAuth flow if needed."""
+    """Load OAuth credentials for a specific mailbox, refreshing the token
+    if needed. Accepts token/credentials from a local file or from env vars
+    (MAILBOX_<NAME>_TOKEN and MAILBOX_<NAME>_CREDENTIALS) so production can
+    use them without committing secrets to git."""
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
+    name = mailbox["name"]
     token_path = Path(mailbox["token"])
     creds_path = Path(mailbox["credentials"])
 
+    env_token = os.getenv(f"MAILBOX_{name.upper()}_TOKEN")
+    env_creds = os.getenv(f"MAILBOX_{name.upper()}_CREDENTIALS")
+
     creds = None
-    if token_path.exists():
+    if env_token:
+        try:
+            token_info = json.loads(env_token)
+            creds = Credentials.from_authorized_user_info(token_info, GMAIL_SCOPES)
+        except Exception as e:
+            logger.warning("Could not load %s token from env: %s", name, e)
+
+    if not creds and token_path.exists():
         creds = Credentials.from_authorized_user_file(str(token_path), GMAIL_SCOPES)
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), GMAIL_SCOPES)
+            client_secrets: Any = None
+            if env_creds:
+                try:
+                    client_secrets = json.loads(env_creds)
+                except Exception as e:
+                    logger.warning("Could not load %s credentials from env: %s", name, e)
+            if not client_secrets:
+                if creds_path.exists():
+                    client_secrets = str(creds_path)
+                else:
+                    raise RuntimeError(
+                        f"No credentials or token for mailbox '{name}'. "
+                        f"Set MAILBOX_{name.upper()}_TOKEN (or run auth-mailboxes locally and copy the token file)."
+                    )
+            if isinstance(client_secrets, dict):
+                flow = InstalledAppFlow.from_client_config(client_secrets, GMAIL_SCOPES)
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(client_secrets, GMAIL_SCOPES)
             creds = flow.run_local_server(port=0)
-        token_path.write_text(creds.to_json())
+            token_path.write_text(creds.to_json())
     return creds
 
 
