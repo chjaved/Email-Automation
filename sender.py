@@ -413,8 +413,8 @@ def send_due(user_id: int) -> int:
                     step,
                     mailbox["name"],
                 )
-        except Exception as e:
-            logger.error("Send failed for lead %s: %s", lead["id"], e)
+        except Exception:
+            logger.exception("Send failed for lead %s", lead["id"])
 
         # Randomized delay between sends to avoid spam detection
         if sent_count < len(due):
@@ -587,8 +587,8 @@ def _run_cycle_for_user(user_id: int) -> bool:
         logger.info("Found %d due leads for user %s", len(due), user_id)
         try:
             send_due(user_id)
-        except Exception as e:
-            logger.error("Send cycle failed for user %s: %s", user_id, e)
+        except Exception:
+            logger.exception("Send cycle failed for user %s", user_id)
 
     if inbox_due:
         try:
