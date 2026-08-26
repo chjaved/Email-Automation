@@ -135,6 +135,17 @@ def cmd_clean_bounced(args: argparse.Namespace) -> None:
     conn = get_conn()
     try:
         cur = conn.cursor()
+        # Remove child records before deleting leads so the FK constraint passes
+        cur.execute(
+            "DELETE FROM emails WHERE lead_id IN "
+            "(SELECT id FROM leads WHERE user_id = ? AND status = 'bounced')",
+            (args.user_id,),
+        )
+        cur.execute(
+            "DELETE FROM events WHERE lead_id IN "
+            "(SELECT id FROM leads WHERE user_id = ? AND status = 'bounced')",
+            (args.user_id,),
+        )
         cur.execute(
             "DELETE FROM leads WHERE user_id = ? AND status = 'bounced'",
             (args.user_id,),
@@ -144,6 +155,32 @@ def cmd_clean_bounced(args: argparse.Namespace) -> None:
     finally:
         conn.close()
     print(f"Deleted {deleted} bounced leads for user {args.user_id}.")
+
+
+def cmd_remove_user(args: argparse.Namespace) -> None:
+    user_id = args.user_id
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM emails WHERE lead_id IN "
+            "(SELECT id FROM leads WHERE user_id = ?)",
+            (user_id,),
+        )
+        cur.execute(
+            "DELETE FROM events WHERE lead_id IN "
+            "(SELECT id FROM leads WHERE user_id = ?)",
+            (user_id,),
+        )
+        cur.execute("DELETE FROM leads WHERE user_id = ?", (user_id,))
+        cur.execute("DELETE FROM user_attachments WHERE user_id = ?", (user_id,))
+        cur.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+        cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        cur.execute("DELETE FROM state WHERE key LIKE ?", (f"user_{user_id}_%",))
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"Removed user {user_id} and all related data.")
 
 
 def cmd_test_send(args: argparse.Namespace) -> None:
@@ -208,6 +245,10 @@ def main(argv: list = None) -> int:
     p_clean = sub.add_parser("clean-bounced", help="Delete all leads that already bounced")
     p_clean.add_argument("--user-id", type=int, default=2, help="User whose bounced leads to clean")
     p_clean.set_defaults(func=cmd_clean_bounced)
+
+    p_remove = sub.add_parser("remove-user", help="Delete a user and all associated data")
+    p_remove.add_argument("--user-id", type=int, required=True, help="User ID to remove")
+    p_remove.set_defaults(func=cmd_remove_user)
 
     p_test = sub.add_parser("test-send", help="Send a single test email using the current template")
     p_test.add_argument("email", help="Recipient email address")
