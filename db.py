@@ -494,36 +494,42 @@ def _migrate_leads_unique_to_composite_postgres(conn) -> None:
 def init_db() -> None:
     if USE_POSTGRES:
         conn = get_conn()
-        cur = conn.cursor()
-        for stmt in POSTGRES_SCHEMA_STATEMENTS:
-            cur.execute(stmt)
-        conn.commit()
-        _add_missing_columns_postgres(conn)
-        conn.commit()
-        _migrate_leads_unique_to_composite_postgres(conn)
-        conn.commit()
-        conn.close()
+        try:
+            cur = conn.cursor()
+            for stmt in POSTGRES_SCHEMA_STATEMENTS:
+                cur.execute(stmt)
+            conn.commit()
+            _add_missing_columns_postgres(conn)
+            conn.commit()
+            _migrate_leads_unique_to_composite_postgres(conn)
+            conn.commit()
+        finally:
+            conn.close()
         return
 
     if not DB_PATH.parent.exists():
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     conn = get_conn()
-    conn.executescript(SQLITE_SCHEMA)
-    _add_missing_columns_sqlite(conn)
-    _migrate_leads_unique_to_composite_sqlite(conn)
-    conn.commit()
-    conn.close()
+    try:
+        conn.executescript(SQLITE_SCHEMA)
+        _add_missing_columns_sqlite(conn)
+        _migrate_leads_unique_to_composite_sqlite(conn)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def log_event(lead_id: int, event_type: str, details: str = "", mailbox: str = "") -> None:
     from datetime import datetime, timezone
 
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO events (lead_id, event_type, details, mailbox, created_at) VALUES (?, ?, ?, ?, ?)",
-        (lead_id, event_type, details, mailbox, datetime.now(timezone.utc).isoformat()),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO events (lead_id, event_type, details, mailbox, created_at) VALUES (?, ?, ?, ?, ?)",
+            (lead_id, event_type, details, mailbox, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
