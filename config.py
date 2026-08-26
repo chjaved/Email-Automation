@@ -62,7 +62,7 @@ MAILBOX_POOL = [
         "credentials": BASE_DIR / "credentials_contact.json",
         "token": BASE_DIR / "token_contact.json",
         "daily_cap": 50,
-        "active": True,
+        "active": False,
         "warmup_day": 1,
     },
     {
@@ -72,7 +72,7 @@ MAILBOX_POOL = [
         "credentials": BASE_DIR / "credentials_ipros.json",
         "token": BASE_DIR / "token_ipros.json",
         "daily_cap": 50,
-        "active": True,
+        "active": False,
         "warmup_day": 1,
     },
 ]
