@@ -66,18 +66,20 @@ REMOVE_KEYWORDS = [
 # ---------------------------------------------------------------------------
 def set_lead_status(lead_id: int, status: str, **fields: Any) -> None:
     conn = get_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    columns = ["status = ?"]
-    values: List[Any] = [status]
-    for k, v in fields.items():
-        columns.append(f"{k} = ?")
-        values.append(v)
+        columns = ["status = ?"]
+        values: List[Any] = [status]
+        for k, v in fields.items():
+            columns.append(f"{k} = ?")
+            values.append(v)
 
-    values.append(lead_id)
-    cur.execute(f"UPDATE leads SET {', '.join(columns)} WHERE id = ?", values)
-    conn.commit()
-    conn.close()
+        values.append(lead_id)
+        cur.execute(f"UPDATE leads SET {', '.join(columns)} WHERE id = ?", values)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _state_key(user_id: int, key: str) -> str:
@@ -260,14 +262,16 @@ def detect_bounces_and_replies(user_id: int, from_email: str) -> None:
         return
 
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, email, status FROM leads WHERE sent_at IS NOT NULL AND user_id = ? "
-        "AND status NOT IN ('replied','unsubscribed','bounced')",
-        (user_id,),
-    )
-    sent_leads = {row["email"].lower(): row["id"] for row in cur.fetchall()}
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, email, status FROM leads WHERE sent_at IS NOT NULL AND user_id = ? "
+            "AND status NOT IN ('replied','unsubscribed','bounced')",
+            (user_id,),
+        )
+        sent_leads = {row["email"].lower(): row["id"] for row in cur.fetchall()}
+    finally:
+        conn.close()
 
     from_email_lower = from_email.lower()
     for m in messages:
@@ -322,15 +326,17 @@ def detect_bounces_and_replies(user_id: int, from_email: str) -> None:
 def _due_leads(user_id: int) -> List[sqlite3.Row]:
     now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT * FROM leads WHERE status = 'scheduled' AND scheduled_at IS NOT NULL "
-        "AND scheduled_at <= ? AND user_id = ? ORDER BY scheduled_at",
-        (now, user_id),
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM leads WHERE status = 'scheduled' AND scheduled_at IS NOT NULL "
+            "AND scheduled_at <= ? AND user_id = ? ORDER BY scheduled_at",
+            (now, user_id),
+        )
+        rows = cur.fetchall()
+        return rows
+    finally:
+        conn.close()
 
 
 def send_due(user_id: int) -> int:
@@ -344,86 +350,88 @@ def send_due(user_id: int) -> int:
     gap_max = get_send_gap_max(user_id)
 
     conn = get_conn()
-    cur = conn.cursor()
-    sent_count = 0
-    for lead in due:
-        if is_paused(user_id):
-            logger.warning("Campaign is paused; stopping send loop.")
-            break
+    try:
+        cur = conn.cursor()
+        sent_count = 0
+        for lead in due:
+            if is_paused(user_id):
+                logger.warning("Campaign is paused; stopping send loop.")
+                break
 
-        if is_do_not_email(lead["email"].split()[0] if lead["email"] else ""):
-            logger.info("Skipping %s: in do_not_email.csv", lead["email"])
-            set_lead_status(lead["id"], "unsubscribed")
-            continue
+            if is_do_not_email(lead["email"].split()[0] if lead["email"] else ""):
+                logger.info("Skipping %s: in do_not_email.csv", lead["email"])
+                set_lead_status(lead["id"], "unsubscribed")
+                continue
 
-        if is_final(lead["status"]):
-            continue
+            if is_final(lead["status"]):
+                continue
 
-        if not check_bounce_rate_safety(user_id):
-            break
+            if not check_bounce_rate_safety(user_id):
+                break
 
-        mailbox = get_next_mailbox(conn)
-        if mailbox is None:
-            logger.info("All mailboxes at daily cap. Stopping.")
-            break
+            mailbox = get_next_mailbox(conn)
+            if mailbox is None:
+                logger.info("All mailboxes at daily cap. Stopping.")
+                break
 
-        step = lead["sequence_step"] or 0
-        in_reply_to = lead["gmail_message_id_header"] or ""
-        thread_id = lead["gmail_thread_id"] or ""
+            step = lead["sequence_step"] or 0
+            in_reply_to = lead["gmail_message_id_header"] or ""
+            thread_id = lead["gmail_thread_id"] or ""
 
-        try:
-            result = _send_mailbox_message(lead, mailbox)
-            if result:
-                now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
-                next_step = step + 1
-
-                if step == 0:
-                    log_event(lead["id"], "sent", mailbox=mailbox["name"])
-                else:
-                    log_event(
-                        lead["id"],
-                        f"followup_{step}",
-                        f"Step {step} follow-up",
-                        mailbox=mailbox["name"],
-                    )
-
-                if step == len(FOLLOWUP_SCHEDULE):
-                    new_status = "completed"
+            try:
+                result = _send_mailbox_message(lead, mailbox)
+                if result:
+                    now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
                     next_step = step + 1
-                else:
-                    new_status = "sent"
 
-                set_lead_status(
-                    lead["id"],
-                    new_status,
-                    sequence_step=next_step,
-                    last_contact_at=now,
-                    sent_at=now,
-                    gmail_message_id=result["message_id"],
-                    gmail_thread_id=result["thread_id"],
-                    gmail_message_id_header=result.get("message_id_header", ""),
-                    scheduled_at=None,
-                    sent_from_mailbox=mailbox["name"],
-                )
-                sent_count += 1
-                logger.info(
-                    "Marked lead %s as %s (step %d) via mailbox %s",
-                    lead["id"],
-                    new_status,
-                    step,
-                    mailbox["name"],
-                )
-        except Exception:
-            logger.exception("Send failed for lead %s", lead["id"])
+                    if step == 0:
+                        log_event(lead["id"], "sent", mailbox=mailbox["name"])
+                    else:
+                        log_event(
+                            lead["id"],
+                            f"followup_{step}",
+                            f"Step {step} follow-up",
+                            mailbox=mailbox["name"],
+                        )
 
-        # Randomized delay between sends to avoid spam detection
-        if sent_count < len(due):
-            delay = random.randint(gap_min, gap_max)
-            logger.info("Waiting %ds before next send (user %s)", delay, user_id)
-            time.sleep(delay)
+                    if step == len(FOLLOWUP_SCHEDULE):
+                        new_status = "completed"
+                        next_step = step + 1
+                    else:
+                        new_status = "sent"
 
-    conn.close()
-    return sent_count
+                    set_lead_status(
+                        lead["id"],
+                        new_status,
+                        sequence_step=next_step,
+                        last_contact_at=now,
+                        sent_at=now,
+                        gmail_message_id=result["message_id"],
+                        gmail_thread_id=result["thread_id"],
+                        gmail_message_id_header=result.get("message_id_header", ""),
+                        scheduled_at=None,
+                        sent_from_mailbox=mailbox["name"],
+                    )
+                    sent_count += 1
+                    logger.info(
+                        "Marked lead %s as %s (step %d) via mailbox %s",
+                        lead["id"],
+                        new_status,
+                        step,
+                        mailbox["name"],
+                    )
+            except Exception:
+                logger.exception("Send failed for lead %s", lead["id"])
+
+            # Randomized delay between sends to avoid spam detection
+            if sent_count < len(due):
+                delay = random.randint(gap_min, gap_max)
+                logger.info("Waiting %ds before next send (user %s)", delay, user_id)
+                time.sleep(delay)
+
+        return sent_count
+    finally:
+        conn.close()
 
 
 def _should_check_inbox(user_id: int) -> bool:
@@ -479,89 +487,89 @@ def _auto_promote_due_leads(user_id: int) -> int:
     today_iso = now.date().isoformat()
 
     conn = get_conn()
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
 
-    # Bulk-enrich new leads that already have an industry (no AI needed)
-    cur.execute(
-        "UPDATE leads SET status = 'enriched' WHERE status = 'new' AND user_id = ? AND COALESCE(industry, '') != ''",
-        (user_id,),
-    )
-    bulk_enriched = cur.rowcount
-    conn.commit()
-
-    daily_cap = min(get_daily_send_cap(user_id), get_total_daily_cap())
-
-    cur.execute(
-        "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND sent_at IS NOT NULL AND substr(sent_at, 1, 10) = ?",
-        (user_id, today_iso),
-    )
-    sent_today = cur.fetchone()["n"]
-
-    cur.execute(
-        "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND status = 'scheduled'",
-        (user_id,),
-    )
-    already_scheduled = cur.fetchone()["n"]
-
-    cur.execute(
-        "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND status = 'new'",
-        (user_id,),
-    )
-    new_count = cur.fetchone()["n"]
-
-    cur.execute(
-        "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND status = 'enriched'",
-        (user_id,),
-    )
-    enriched_count = cur.fetchone()["n"]
-
-    remaining = max(0, daily_cap - sent_today - already_scheduled)
-    logger.info(
-        "Auto-promote user %s: daily_cap=%d sent_today=%d already_scheduled=%d remaining=%d "
-        "bulk_enriched_now=%d new_count=%d enriched_count=%d",
-        user_id, daily_cap, sent_today, already_scheduled, remaining,
-        bulk_enriched, new_count, enriched_count,
-    )
-    if remaining <= 0:
-        conn.close()
-        return 0
-
-    cur.execute(
-        "SELECT id FROM leads WHERE status = 'enriched' AND user_id = ? ORDER BY id LIMIT ?",
-        (user_id, remaining),
-    )
-    ids = [r["id"] for r in cur.fetchall()]
-
-    if len(ids) < remaining:
+        # Bulk-enrich new leads that already have an industry (no AI needed)
         cur.execute(
-            "SELECT * FROM leads WHERE status = 'sent' AND sequence_step BETWEEN 1 AND 3 "
-            "AND last_contact_at IS NOT NULL AND user_id = ? ORDER BY last_contact_at",
+            "UPDATE leads SET status = 'enriched' WHERE status = 'new' AND user_id = ? AND COALESCE(industry, '') != ''",
             (user_id,),
         )
-        for lead in cur.fetchall():
-            if len(ids) >= remaining:
-                break
-            try:
-                wait_days = step_to_wait_days(lead["sequence_step"])
-                last_contact = datetime.fromisoformat(lead["last_contact_at"])
-                if (now - last_contact).days >= wait_days:
-                    ids.append(lead["id"])
-            except Exception:
-                continue
+        bulk_enriched = cur.rowcount
+        conn.commit()
 
-    if not ids:
-        conn.close()
-        return 0
+        daily_cap = min(get_daily_send_cap(user_id), get_total_daily_cap())
 
-    for lead_id in ids:
         cur.execute(
-            "UPDATE leads SET status = 'scheduled', scheduled_at = ? WHERE id = ?",
-            (now.isoformat(), lead_id),
+            "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND sent_at IS NOT NULL AND substr(sent_at, 1, 10) = ?",
+            (user_id, today_iso),
         )
-    conn.commit()
-    conn.close()
-    logger.info("Auto-promoted %d leads to scheduled for user %s", len(ids), user_id)
-    return len(ids)
+        sent_today = cur.fetchone()["n"]
+
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND status = 'scheduled'",
+            (user_id,),
+        )
+        already_scheduled = cur.fetchone()["n"]
+
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND status = 'new'",
+            (user_id,),
+        )
+        new_count = cur.fetchone()["n"]
+
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND status = 'enriched'",
+            (user_id,),
+        )
+        enriched_count = cur.fetchone()["n"]
+
+        remaining = max(0, daily_cap - sent_today - already_scheduled)
+        logger.info(
+            "Auto-promote user %s: daily_cap=%d sent_today=%d already_scheduled=%d remaining=%d "
+            "bulk_enriched_now=%d new_count=%d enriched_count=%d",
+            user_id, daily_cap, sent_today, already_scheduled, remaining,
+            bulk_enriched, new_count, enriched_count,
+        )
+        if remaining <= 0:
+            return 0
+
+        cur.execute(
+            "SELECT id FROM leads WHERE status = 'enriched' AND user_id = ? ORDER BY id LIMIT ?",
+            (user_id, remaining),
+        )
+        ids = [r["id"] for r in cur.fetchall()]
+
+        if len(ids) < remaining:
+            cur.execute(
+                "SELECT * FROM leads WHERE status = 'sent' AND sequence_step BETWEEN 1 AND 3 "
+                "AND last_contact_at IS NOT NULL AND user_id = ? ORDER BY last_contact_at",
+                (user_id,),
+            )
+            for lead in cur.fetchall():
+                if len(ids) >= remaining:
+                    break
+                try:
+                    wait_days = step_to_wait_days(lead["sequence_step"])
+                    last_contact = datetime.fromisoformat(lead["last_contact_at"])
+                    if (now - last_contact).days >= wait_days:
+                        ids.append(lead["id"])
+                except Exception:
+                    continue
+
+        if not ids:
+            return 0
+
+        for lead_id in ids:
+            cur.execute(
+                "UPDATE leads SET status = 'scheduled', scheduled_at = ? WHERE id = ?",
+                (now.isoformat(), lead_id),
+            )
+        conn.commit()
+        logger.info("Auto-promoted %d leads to scheduled for user %s", len(ids), user_id)
+        return len(ids)
+    finally:
+        conn.close()
 
 
 def _run_cycle_for_user(user_id: int) -> bool:
@@ -646,10 +654,12 @@ def send_lead_now(lead_id: int, user_id: int) -> Dict[str, Any]:
     Also enforces ownership: raises ValueError if the lead doesn't belong to `user_id`.
     """
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM leads WHERE id = ? AND user_id = ?", (lead_id, user_id))
-    lead = cur.fetchone()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM leads WHERE id = ? AND user_id = ?", (lead_id, user_id))
+        lead = cur.fetchone()
+    finally:
+        conn.close()
 
     if lead is None:
         raise ValueError(f"Lead {lead_id} not found")
