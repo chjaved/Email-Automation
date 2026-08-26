@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 from config import (
     BOUNCE_PAUSE_THRESHOLD,
+    BOUNCE_RATE_DAYS,
     BOUNCE_RATE_WINDOW,
     FOLLOWUP_SCHEDULE,
     MAILBOX_POOL,
@@ -124,9 +125,13 @@ def _trailing_bounce_rate(user_id: int) -> float:
     conn = get_conn()
     try:
         cur = conn.cursor()
+        cutoff = (
+            datetime.now(ZoneInfo(TIMEZONE)) - _timedelta(days=BOUNCE_RATE_DAYS)
+        ).isoformat()
         cur.execute(
-            "SELECT status FROM leads WHERE sent_at IS NOT NULL AND user_id = ? ORDER BY sent_at DESC LIMIT ?",
-            (user_id, BOUNCE_RATE_WINDOW),
+            "SELECT status FROM leads WHERE sent_at IS NOT NULL AND user_id = ? "
+            "AND sent_at > ? ORDER BY sent_at DESC LIMIT ?",
+            (user_id, cutoff, BOUNCE_RATE_WINDOW),
         )
         rows = cur.fetchall()
     finally:
