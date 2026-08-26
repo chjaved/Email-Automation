@@ -33,7 +33,7 @@ if USE_POSTGRES:
     # to close its connection. Without this, a bug (or a huge CSV import)
     # that leaks connections can exhaust Postgres' server-side connection
     # limit and take down every service sharing that database.
-    POSTGRES_POOL_MAX = int(os.getenv("POSTGRES_POOL_MAX", "10"))
+    POSTGRES_POOL_MAX = int(os.getenv("POSTGRES_POOL_MAX", "20"))
     _pool = psycopg2.pool.ThreadedConnectionPool(1, POSTGRES_POOL_MAX, DATABASE_URL)
 
     class _PGCursor:

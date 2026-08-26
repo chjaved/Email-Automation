@@ -119,11 +119,11 @@ def _sends_today(conn, mailbox_name: str) -> int:
     today_iso = date.today().isoformat()
     cur = conn.cursor()
     cur.execute(
-        "SELECT COUNT(*) FROM events WHERE mailbox=? AND event_type='sent' AND substr(created_at, 1, 10) = ?",
+        "SELECT COUNT(*) AS count FROM events WHERE mailbox=? AND event_type='sent' AND substr(created_at, 1, 10) = ?",
         (mailbox_name, today_iso),
     )
     row = cur.fetchone()
-    return row[0] if row else 0
+    return row["count"] if row else 0
 
 
 def get_next_mailbox(conn=None) -> Optional[Dict[str, Any]]:
