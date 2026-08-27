@@ -197,25 +197,28 @@ def cmd_score_priorities(args: argparse.Namespace) -> None:
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("UPDATE leads SET priority = 1 WHERE user_id = ?", (user_id,))
-        if hot:
-            placeholders = ",".join("?" for _ in hot)
-            cur.execute(
-                f"UPDATE leads SET priority = 3 WHERE user_id = ? AND lower(industry) IN ({placeholders})",
-                (user_id,) + tuple(hot),
+        if not (hot or warm or cold):
+            cur.execute("UPDATE leads SET priority = 1 WHERE user_id = ?", (user_id,))
+        else:
+            clauses = ["priority = 1"]
+            if hot:
+                h = ",".join("?" for _ in hot)
+                clauses.append(f"WHEN lower(industry) IN ({h}) THEN 3")
+            if warm:
+                w = ",".join("?" for _ in warm)
+                clauses.append(f"WHEN lower(industry) IN ({w}) THEN 2")
+            if cold:
+                c = ",".join("?" for _ in cold)
+                clauses.append(f"WHEN lower(industry) IN ({c}) THEN 0")
+            # Reconstruct CASE expression safely: base assignment + WHEN ... THEN ... ELSE 1 END
+            case_body = " ".join(clauses[1:]) + " ELSE 1 END"
+            sql = (
+                "UPDATE leads SET priority = CASE "
+                f"{case_body} "
+                "WHERE user_id = ?"
             )
-        if warm:
-            placeholders = ",".join("?" for _ in warm)
-            cur.execute(
-                f"UPDATE leads SET priority = 2 WHERE user_id = ? AND lower(industry) IN ({placeholders})",
-                (user_id,) + tuple(warm),
-            )
-        if cold:
-            placeholders = ",".join("?" for _ in cold)
-            cur.execute(
-                f"UPDATE leads SET priority = 0 WHERE user_id = ? AND lower(industry) IN ({placeholders})",
-                (user_id,) + tuple(cold),
-            )
+            values = tuple(hot + warm + cold) + (user_id,)
+            cur.execute(sql, values)
         conn.commit()
     finally:
         conn.close()
