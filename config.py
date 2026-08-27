@@ -51,7 +51,7 @@ MAILBOX_POOL = [
         "alias": "fwiv-ai@iprosedutech.com.my",
         "credentials": BASE_DIR / "credentials_info.json",
         "token": BASE_DIR / "token_info.json",
-        "daily_cap": 100,
+        "daily_cap": 300,
         "active": True,
         "warmup_day": 0,
     },
@@ -61,7 +61,7 @@ MAILBOX_POOL = [
         "alias": "fwiv-ai-sys@iprosedutech.com.my",
         "credentials": BASE_DIR / "credentials_contact.json",
         "token": BASE_DIR / "token_contact.json",
-        "daily_cap": 50,
+        "daily_cap": 100,
         "active": True,
         "warmup_day": 1,
     },
@@ -71,7 +71,7 @@ MAILBOX_POOL = [
         "alias": "fwiv-ai-portal@iprosedutech.com.my",
         "credentials": BASE_DIR / "credentials_ipros.json",
         "token": BASE_DIR / "token_ipros.json",
-        "daily_cap": 50,
+        "daily_cap": 100,
         "active": True,
         "warmup_day": 1,
     },
@@ -79,10 +79,10 @@ MAILBOX_POOL = [
 
 # Warmup ramp: days since activation -> maximum allowed daily cap for that day
 WARMUP_RAMP = {
-    0: 50,
-    4: 80,
-    8: 150,
-    15: 500,
+    0: 300,
+    4: 500,
+    8: 800,
+    15: 1000,
 }
 
 # SMTP (Gmail) settings
