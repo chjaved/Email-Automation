@@ -184,7 +184,7 @@ def cmd_remove_user(args: argparse.Namespace) -> None:
     print(f"Removed user {user_id} and all related data.")
 
 
-def _normalize_industries(s: str) -> List[str]:
+def _normalize_industries(s: str) -> list[str]:
     return [x.strip().lower() for x in s.split(",") if x.strip()]
 
 
