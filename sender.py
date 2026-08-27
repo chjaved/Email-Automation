@@ -325,7 +325,7 @@ def _due_leads(user_id: int) -> List[sqlite3.Row]:
     cur = conn.cursor()
     cur.execute(
         "SELECT * FROM leads WHERE status = 'scheduled' AND scheduled_at IS NOT NULL "
-        "AND scheduled_at <= ? AND user_id = ? ORDER BY priority DESC, scheduled_at",
+        "AND scheduled_at <= ? AND user_id = ? ORDER BY scheduled_at",
         (now, user_id),
     )
     rows = cur.fetchall()

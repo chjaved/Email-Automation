@@ -123,7 +123,6 @@ def _add_missing_columns_sqlite(conn) -> None:
             ("user_id", "INTEGER", "NULL"),
             ("bounce_reason", "TEXT", "NULL"),
             ("sent_from_mailbox", "TEXT", "NULL"),
-            ("priority", "INTEGER", "1"),
         ],
         "events": [
             ("mailbox", "TEXT", "NULL"),
@@ -170,7 +169,6 @@ def _add_missing_columns_postgres(conn) -> None:
             ("user_id", "INTEGER", "NULL"),
             ("bounce_reason", "TEXT", "NULL"),
             ("sent_from_mailbox", "TEXT", "NULL"),
-            ("priority", "INTEGER", "1"),
         ],
         "events": [
             ("mailbox", "TEXT", "NULL"),
@@ -222,8 +220,7 @@ CREATE TABLE IF NOT EXISTS leads (
     gmail_message_id TEXT,
     gmail_thread_id TEXT,
     gmail_message_id_header TEXT,
-    sent_from_mailbox TEXT,
-    priority INTEGER DEFAULT 1
+    sent_from_mailbox TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_user ON leads(email, user_id);
 
@@ -334,8 +331,7 @@ POSTGRES_SCHEMA_STATEMENTS = [
         gmail_message_id TEXT,
         gmail_thread_id TEXT,
         gmail_message_id_header TEXT,
-        user_id INTEGER,
-        priority INTEGER DEFAULT 1
+        user_id INTEGER
     )
     """,
     """

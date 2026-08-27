@@ -1,7 +1,6 @@
 """CLI entry point for campaign-engine."""
 import argparse
 import logging
-import os
 import re
 import sys
 from datetime import date, datetime
@@ -184,47 +183,6 @@ def cmd_remove_user(args: argparse.Namespace) -> None:
     print(f"Removed user {user_id} and all related data.")
 
 
-def _normalize_industries(s: str) -> list[str]:
-    return [x.strip().lower() for x in s.split(",") if x.strip()]
-
-
-def cmd_score_priorities(args: argparse.Namespace) -> None:
-    user_id = args.user_id
-    hot = _normalize_industries(args.hot or os.getenv("LEAD_PRIORITY_HOT", ""))
-    warm = _normalize_industries(args.warm or os.getenv("LEAD_PRIORITY_WARM", ""))
-    cold = _normalize_industries(args.cold or os.getenv("LEAD_PRIORITY_COLD", ""))
-
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        if not (hot or warm or cold):
-            cur.execute("UPDATE leads SET priority = 1 WHERE user_id = ?", (user_id,))
-        else:
-            clauses = ["priority = 1"]
-            if hot:
-                h = ",".join("?" for _ in hot)
-                clauses.append(f"WHEN lower(industry) IN ({h}) THEN 3")
-            if warm:
-                w = ",".join("?" for _ in warm)
-                clauses.append(f"WHEN lower(industry) IN ({w}) THEN 2")
-            if cold:
-                c = ",".join("?" for _ in cold)
-                clauses.append(f"WHEN lower(industry) IN ({c}) THEN 0")
-            # Reconstruct CASE expression safely: base assignment + WHEN ... THEN ... ELSE 1 END
-            case_body = " ".join(clauses[1:]) + " ELSE 1 END"
-            sql = (
-                "UPDATE leads SET priority = CASE "
-                f"{case_body} "
-                "WHERE user_id = ?"
-            )
-            values = tuple(hot + warm + cold) + (user_id,)
-            cur.execute(sql, values)
-        conn.commit()
-    finally:
-        conn.close()
-    print(f"Scored priorities for user {user_id}: hot={hot}, warm={warm}, cold={cold}")
-
-
 def cmd_test_send(args: argparse.Namespace) -> None:
     result = send_test_email(
         to_address=args.email,
@@ -297,13 +255,6 @@ def main(argv: list = None) -> int:
     p_test.add_argument("--company", default="Test Company", help="Recipient company name")
     p_test.add_argument("--industry", default="cleaning", help="Industry (e.g. cleaning, construction, hotel)")
     p_test.set_defaults(func=cmd_test_send)
-
-    p_score = sub.add_parser("score-priorities", help="Score leads by industry priority")
-    p_score.add_argument("--user-id", type=int, default=2, help="User whose leads to score")
-    p_score.add_argument("--hot", default="", help="Comma-separated hot industries (priority 3)")
-    p_score.add_argument("--warm", default="", help="Comma-separated warm industries (priority 2)")
-    p_score.add_argument("--cold", default="", help="Comma-separated cold industries (priority 0)")
-    p_score.set_defaults(func=cmd_score_priorities)
 
     p_auth = sub.add_parser("auth-mailboxes", help="Run OAuth flow for all configured mailboxes")
     p_auth.set_defaults(func=cmd_auth_mailboxes)
