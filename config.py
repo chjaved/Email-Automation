@@ -51,9 +51,9 @@ MAILBOX_POOL = [
         "alias": "fwiv-ai@iprosedutech.com.my",
         "credentials": BASE_DIR / "credentials_info.json",
         "token": BASE_DIR / "token_info.json",
-        "daily_cap": 300,
+        "daily_cap": 1000,
         "active": True,
-        "warmup_day": 0,
+        "warmup_day": 4,
     },
     {
         "name": "contact",
@@ -61,9 +61,9 @@ MAILBOX_POOL = [
         "alias": "fwiv-ai-sys@iprosedutech.com.my",
         "credentials": BASE_DIR / "credentials_contact.json",
         "token": BASE_DIR / "token_contact.json",
-        "daily_cap": 100,
+        "daily_cap": 1000,
         "active": True,
-        "warmup_day": 1,
+        "warmup_day": 0,
     },
     {
         "name": "ipros",
@@ -71,17 +71,17 @@ MAILBOX_POOL = [
         "alias": "fwiv-ai-portal@iprosedutech.com.my",
         "credentials": BASE_DIR / "credentials_ipros.json",
         "token": BASE_DIR / "token_ipros.json",
-        "daily_cap": 100,
+        "daily_cap": 1000,
         "active": True,
-        "warmup_day": 1,
+        "warmup_day": 0,
     },
 ]
 
 # Warmup ramp: days since activation -> maximum allowed daily cap for that day
 WARMUP_RAMP = {
-    0: 300,
-    4: 500,
-    8: 800,
+    0: 100,
+    4: 300,
+    8: 1000,
     15: 1000,
 }
 
