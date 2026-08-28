@@ -323,10 +323,13 @@ def _due_leads(user_id: int) -> List[sqlite3.Row]:
     now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
     conn = get_conn()
     cur = conn.cursor()
+    hot = ["construction", "manufacturing", "restaurant"]
+    placeholders = ",".join("?" for _ in hot)
     cur.execute(
         "SELECT * FROM leads WHERE status = 'scheduled' AND scheduled_at IS NOT NULL "
-        "AND scheduled_at <= ? AND user_id = ? ORDER BY scheduled_at",
-        (now, user_id),
+        "AND scheduled_at <= ? AND user_id = ? "
+        f"ORDER BY CASE WHEN lower(industry) IN ({placeholders}) THEN 0 ELSE 1 END, scheduled_at",
+        (now, user_id) + tuple(hot),
     )
     rows = cur.fetchall()
     conn.close()
