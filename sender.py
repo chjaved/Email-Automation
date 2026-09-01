@@ -4,6 +4,7 @@ Sends via Gmail SMTP with an authenticated `SMTP_USER` and (optionally) a
 different `FROM_ALIAS` address that must be a registered "send-as" alias
 on the same Gmail account.
 """
+import base64
 import email.utils
 import html as html_lib
 import logging
@@ -323,17 +324,28 @@ def _due_leads(user_id: int) -> List[sqlite3.Row]:
     now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
     conn = get_conn()
     cur = conn.cursor()
-    hot = ["construction", "manufacturing", "restaurant"]
-    placeholders = ",".join("?" for _ in hot)
     cur.execute(
         "SELECT * FROM leads WHERE status = 'scheduled' AND scheduled_at IS NOT NULL "
-        "AND scheduled_at <= ? AND user_id = ? "
-        f"ORDER BY CASE WHEN lower(industry) IN ({placeholders}) THEN 0 ELSE 1 END, scheduled_at",
-        (now, user_id) + tuple(hot),
+        "AND scheduled_at <= ? AND user_id = ? ORDER BY scheduled_at",
+        (now, user_id),
     )
     rows = cur.fetchall()
     conn.close()
-    return rows
+
+    # Round-robin by industry so mailboxes don't dump one industry in a row.
+    from collections import defaultdict
+    groups: Dict[str, List[Any]] = defaultdict(list)
+    for r in rows:
+        key = (r["industry"] or "other").lower()
+        groups[key].append(r)
+    industry_keys = list(groups.keys())
+    random.shuffle(industry_keys)
+    interleaved: List[Any] = []
+    while any(groups[k] for k in industry_keys):
+        for k in industry_keys:
+            if groups[k]:
+                interleaved.append(groups[k].pop(0))
+    return interleaved
 
 
 def send_due(user_id: int) -> int:
@@ -442,7 +454,92 @@ def _should_check_inbox(user_id: int) -> bool:
 
 def _check_inbox(user_id: int, from_email: str) -> None:
     detect_bounces_and_replies(user_id, from_email)
+    try:
+        detect_bounces_gmail_api(user_id)
+    except Exception:
+        logger.exception("Gmail bounce scan failed for user %s", user_id)
     _set_state(_state_key(user_id, "last_inbox_check"), datetime.now(ZoneInfo(TIMEZONE)).isoformat())
+
+
+def detect_bounces_gmail_api(user_id: int) -> int:
+    """Scan each active mailbox via the Gmail API for delivery-failure notices
+    and mark the matching leads as bounced. Returns the number of leads marked.
+    """
+    from mailboxes import _gmail_service
+
+    marked = 0
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, email FROM leads WHERE sent_at IS NOT NULL AND user_id = ? "
+            "AND status NOT IN ('replied','unsubscribed','bounced')",
+            (user_id,),
+        )
+        sent_leads = {row["email"].lower(): row["id"] for row in cur.fetchall() if row["email"]}
+    finally:
+        conn.close()
+    if not sent_leads:
+        return 0
+
+    query = "from:mailer-daemon OR from:postmaster newer_than:3d"
+    email_re = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+    for mailbox in MAILBOX_POOL:
+        if not mailbox.get("active"):
+            continue
+        try:
+            service = _gmail_service(mailbox)
+            resp = service.users().messages().list(userId="me", q=query, maxResults=100).execute()
+            for m in resp.get("messages", []) or []:
+                try:
+                    msg = service.users().messages().get(
+                        userId="me", id=m["id"], format="full"
+                    ).execute()
+                except Exception:
+                    continue
+                # Search headers and snippet+body for the failed recipient email.
+                headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+                candidates = []
+                for hkey in ("x-failed-recipients", "final-recipient", "original-recipient"):
+                    if hkey in headers:
+                        candidates.extend(email_re.findall(headers[hkey]))
+                snippet = msg.get("snippet") or ""
+                candidates.extend(email_re.findall(snippet))
+                # Deep body scan (best effort)
+                def _walk(part):
+                    body = part.get("body", {})
+                    data = body.get("data")
+                    if data:
+                        try:
+                            text = base64.urlsafe_b64decode(data.encode()).decode("utf-8", errors="ignore")
+                            candidates.extend(email_re.findall(text))
+                        except Exception:
+                            pass
+                    for p in part.get("parts", []) or []:
+                        _walk(p)
+                _walk(msg.get("payload", {}))
+
+                seen_addrs = {c.lower() for c in candidates}
+                for addr in seen_addrs:
+                    lead_id = sent_leads.get(addr)
+                    if not lead_id:
+                        continue
+                    reason = (snippet or "Delivery failed")[:300]
+                    try:
+                        set_lead_status(lead_id, "bounced", bounce_reason=reason)
+                        log_event(lead_id, "bounced", reason, mailbox=mailbox["name"])
+                        logger.info(
+                            "Marked lead %s (%s) as bounced via %s: %s",
+                            lead_id, addr, mailbox["name"], reason[:120],
+                        )
+                        sent_leads.pop(addr, None)
+                        marked += 1
+                    except Exception:
+                        logger.exception("Failed to mark lead %s bounced", lead_id)
+        except Exception as e:
+            logger.warning("Gmail bounce scan failed for mailbox %s: %s", mailbox["name"], e)
+    return marked
 
 
 def _all_user_ids() -> List[int]:
