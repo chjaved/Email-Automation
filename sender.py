@@ -482,7 +482,20 @@ def detect_bounces_gmail_api(user_id: int) -> int:
     if not sent_leads:
         return 0
 
-    query = "(from:mailer-daemon OR from:postmaster OR subject:\"Delivery Status Notification\" OR subject:\"Address not found\" OR subject:\"Undelivered Mail\") newer_than:7d"
+    query = (
+        "("
+        "from:mailer-daemon OR from:postmaster OR from:mail-daemon "
+        "OR subject:\"Delivery Status Notification\" "
+        "OR subject:\"Address not found\" "
+        "OR subject:\"Undelivered Mail\" "
+        "OR subject:\"Undeliverable\" "
+        "OR subject:\"Mail delivery failed\" "
+        "OR subject:\"Returned mail\" "
+        "OR subject:\"failure notice\" "
+        "OR subject:\"DNS Error\" "
+        "OR subject:\"could not be delivered\""
+        ") newer_than:14d"
+    )
     email_re = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
     for mailbox in MAILBOX_POOL:
@@ -490,8 +503,20 @@ def detect_bounces_gmail_api(user_id: int) -> int:
             continue
         try:
             service = _gmail_service(mailbox)
-            resp = service.users().messages().list(userId="me", q=query, maxResults=100).execute()
-            for m in resp.get("messages", []) or []:
+            # Paginate to cover large numbers of DSNs.
+            messages: List[Dict[str, Any]] = []
+            page_token = None
+            while True:
+                kwargs = {"userId": "me", "q": query, "maxResults": 500}
+                if page_token:
+                    kwargs["pageToken"] = page_token
+                resp = service.users().messages().list(**kwargs).execute()
+                messages.extend(resp.get("messages", []) or [])
+                page_token = resp.get("nextPageToken")
+                if not page_token or len(messages) >= 5000:
+                    break
+            logger.info("Bounce scan %s: %d candidate DSN messages", mailbox["name"], len(messages))
+            for m in messages:
                 try:
                     msg = service.users().messages().get(
                         userId="me", id=m["id"], format="full"
