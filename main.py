@@ -183,6 +183,16 @@ def cmd_remove_user(args: argparse.Namespace) -> None:
     print(f"Removed user {user_id} and all related data.")
 
 
+def cmd_scan_bounces(args: argparse.Namespace) -> None:
+    """Scan each active mailbox via Gmail API for delivery-failure notices and mark leads bounced."""
+    from sender import detect_bounces_gmail_api
+
+    user_id = args.user_id
+    print(f"Scanning bounces for user {user_id}...")
+    marked = detect_bounces_gmail_api(user_id)
+    print(f"Marked {marked} lead(s) as bounced.")
+
+
 def cmd_test_send(args: argparse.Namespace) -> None:
     result = send_test_email(
         to_address=args.email,
@@ -245,6 +255,10 @@ def main(argv: list = None) -> int:
     p_clean = sub.add_parser("clean-bounced", help="Delete all leads that already bounced")
     p_clean.add_argument("--user-id", type=int, default=2, help="User whose bounced leads to clean")
     p_clean.set_defaults(func=cmd_clean_bounced)
+
+    p_scan = sub.add_parser("scan-bounces", help="Scan Gmail mailboxes for delivery-failure notices and mark leads bounced")
+    p_scan.add_argument("--user-id", type=int, default=2, help="User whose leads to scan")
+    p_scan.set_defaults(func=cmd_scan_bounces)
 
     p_remove = sub.add_parser("remove-user", help="Delete a user and all associated data")
     p_remove.add_argument("--user-id", type=int, required=True, help="User ID to remove")

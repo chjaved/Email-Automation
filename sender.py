@@ -482,7 +482,7 @@ def detect_bounces_gmail_api(user_id: int) -> int:
     if not sent_leads:
         return 0
 
-    query = "from:mailer-daemon OR from:postmaster newer_than:3d"
+    query = "(from:mailer-daemon OR from:postmaster OR subject:\"Delivery Status Notification\" OR subject:\"Address not found\" OR subject:\"Undelivered Mail\") newer_than:7d"
     email_re = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
     for mailbox in MAILBOX_POOL:
