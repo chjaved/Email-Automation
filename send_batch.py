@@ -8,14 +8,10 @@ import argparse
 import csv
 import re
 import sys
-import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from config import setup_logging
-from db import get_conn, insert_returning_id, log_event, init_db
-from generator import _ai_personalisation, _assemble_body, _build_subject, _normalise_industry
-from sender import set_lead_status
+from db import get_conn, insert_returning_id, init_db
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 NA_VALUES = {"", "not publicly available", "n/a", "na", "none", "-"}
@@ -140,73 +136,6 @@ def send_batch(csv_path: Path, limit: int, gap_seconds: int, dry_run: bool, forc
         "send_batch live sending is disabled in the multi-mailbox version. "
         "Use `python main.py run` or the dashboard's Send now button."
     )
-    skip_emails = set() if force else _already_contacted_emails()
-    targets = load_targets(csv_path, limit, skip_emails)
-    if not targets:
-        print("No new valid targets found in CSV (all may already be contacted; use --force to re-target).")
-        return
-
-    print(f"Loaded {len(targets)} targets from {csv_path}")
-    for i, t in enumerate(targets, 1):
-        cc_str = f"  cc: {', '.join(t['cc'])}" if t["cc"] else ""
-        print(f"  {i:2d}. {t['company']}  to: {t['email']}{cc_str}  [{t['industry']}]")
-
-    if dry_run:
-        print("\nDry run - no emails sent, no DB changes.")
-        return
-
-    from_email = verify_sender()
-    sent, failed = 0, 0
-    with SMTPSession() as session:
-        for i, t in enumerate(targets, 1):
-            cc_str = f" cc: {', '.join(t['cc'])}" if t["cc"] else ""
-            print(f"\n[{i}/{len(targets)}] Sending to {t['company']} to: {t['email']}{cc_str} ...")
-            lead_id = _upsert_lead(t["company"], t["email"], t["industry"])
-            try:
-                norm_industry = _normalise_industry(t["industry"])
-                subject = _build_subject(t["company"])
-                personalisation = _ai_personalisation(t["company"], norm_industry, "", {})
-                body = _assemble_body(t["company"], norm_industry, personalisation)
-                msg = _build_message(t["email"], from_email, subject, body, cc=t["cc"])
-                all_recipients = [t["email"]] + t["cc"]
-                session.send(from_addr=from_email, to_addrs=all_recipients, msg=msg)
-
-                now = datetime.now(timezone.utc).isoformat()
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    INSERT INTO emails (lead_id, subject, body, generated_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(lead_id) DO UPDATE SET subject=excluded.subject, body=excluded.body, generated_at=excluded.generated_at
-                    """,
-                    (lead_id, subject, body, now),
-                )
-                conn.commit()
-                conn.close()
-
-                set_lead_status(
-                    lead_id,
-                    "sent",
-                    sequence_step=1,
-                    last_contact_at=now,
-                    sent_at=now,
-                    gmail_message_id=msg["Message-ID"],
-                    gmail_thread_id=msg["Message-ID"],
-                    gmail_message_id_header=msg["Message-ID"],
-                    scheduled_at=None,
-                )
-                log_event(lead_id, "sent", "Sent via send_batch.py")
-
-                print(f"  OK  subject: {subject}")
-                sent += 1
-            except Exception as e:
-                print(f"  FAIL: {e}")
-                failed += 1
-            if i < len(targets):
-                time.sleep(gap_seconds)
-
-    print(f"\nDone. Sent={sent}  Failed={failed}")
 
 
 def main():
