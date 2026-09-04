@@ -312,15 +312,25 @@ def _gmail_service(mailbox: Dict[str, Any]):
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
 
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+
+class InvalidRecipientError(ValueError):
+    """Raised when a lead's To address is not a valid RFC-5322 email."""
+
+
 def send_message(lead: sqlite3.Row, mailbox: Dict[str, Any]) -> Optional[Dict[str, str]]:
     """Build and send one email via the chosen mailbox's Gmail API credentials."""
     from settings import get_cc_enabled
 
-    all_emails = (lead["email"] or "").split()
-    to = all_emails[0] if all_emails else lead["email"]
-    extra_cc = all_emails[1:] if len(all_emails) > 1 else []
+    all_emails = [e.strip() for e in (lead["email"] or "").split() if e.strip()]
+    to = all_emails[0] if all_emails else (lead["email"] or "").strip()
+    extra_cc = [e for e in all_emails[1:] if _EMAIL_RE.match(e)]
     from_addr = mailbox["alias"]
     user_id = lead["user_id"] or 0
+
+    if not to or not _EMAIL_RE.match(to):
+        raise InvalidRecipientError(f"Invalid To address: {to!r}")
 
     email_data = _get_email_body(lead)
     subject = email_data["subject"]
@@ -331,7 +341,8 @@ def send_message(lead: sqlite3.Row, mailbox: Dict[str, Any]) -> Optional[Dict[st
             subject = f"Re: {subject}"
         body = get_followup_body(lead, step)
 
-    cc_list = (DEFAULT_CC_EMAILS if get_cc_enabled(user_id) else []) + extra_cc
+    raw_cc = (DEFAULT_CC_EMAILS if get_cc_enabled(user_id) else []) + extra_cc
+    cc_list = [c for c in raw_cc if c and _EMAIL_RE.match(c)]
     in_reply_to = lead["gmail_message_id_header"] or ""
     msg = _build_message(to, from_addr, subject, body, user_id, in_reply_to=in_reply_to, cc=cc_list)
 

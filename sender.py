@@ -43,6 +43,10 @@ from leads import add_do_not_email, is_do_not_email
 
 logger = logging.getLogger(__name__)
 
+# googleapiclient logs a WARNING for every retried 403/429; num_retries handles
+# them so silence the noise.
+logging.getLogger("googleapiclient.http").setLevel(logging.ERROR)
+
 REMOVE_KEYWORDS = [
     "remove",
     "unsubscribe",
@@ -428,8 +432,20 @@ def send_due(user_id: int) -> int:
                     step,
                     mailbox["name"],
                 )
-        except Exception:
-            logger.exception("Send failed for lead %s", lead["id"])
+        except Exception as e:
+            reason = _classify_send_failure(e)
+            if reason:
+                try:
+                    set_lead_status(lead["id"], "bounced", bounce_reason=reason)
+                    log_event(lead["id"], "bounced", reason, mailbox=mailbox["name"])
+                    logger.warning(
+                        "Marked lead %s as bounced (invalid recipient): %s",
+                        lead["id"], reason,
+                    )
+                except Exception:
+                    logger.exception("Failed to mark lead %s bounced after send error", lead["id"])
+            else:
+                logger.exception("Send failed for lead %s", lead["id"])
 
         # Randomized delay between sends to avoid spam detection
         if sent_count < len(due):
@@ -439,6 +455,27 @@ def send_due(user_id: int) -> int:
 
     conn.close()
     return sent_count
+
+
+def _classify_send_failure(exc: Exception) -> Optional[str]:
+    """Return a short reason string if the exception represents an invalid
+    recipient / cc address, else None. Used to mark the lead as bounced
+    immediately so we don't retry a permanently broken address."""
+    from mailboxes import InvalidRecipientError
+    try:
+        from googleapiclient.errors import HttpError
+    except Exception:
+        HttpError = None  # type: ignore
+
+    if isinstance(exc, InvalidRecipientError):
+        return f"Invalid email address: {exc}"
+    if HttpError is not None and isinstance(exc, HttpError):
+        status = getattr(getattr(exc, "resp", None), "status", None)
+        text = str(exc)
+        if status == 400 and ("Invalid To header" in text or "Invalid Cc header" in text
+                              or "Invalid From header" in text):
+            return "Gmail rejected recipient address as invalid"
+    return None
 
 
 def _should_check_inbox(user_id: int) -> bool:
@@ -510,7 +547,7 @@ def detect_bounces_gmail_api(user_id: int) -> int:
                 kwargs = {"userId": "me", "q": query, "maxResults": 500}
                 if page_token:
                     kwargs["pageToken"] = page_token
-                resp = service.users().messages().list(**kwargs).execute()
+                resp = service.users().messages().list(**kwargs).execute(num_retries=5)
                 messages.extend(resp.get("messages", []) or [])
                 page_token = resp.get("nextPageToken")
                 if not page_token or len(messages) >= 5000:
@@ -520,7 +557,7 @@ def detect_bounces_gmail_api(user_id: int) -> int:
                 try:
                     msg = service.users().messages().get(
                         userId="me", id=m["id"], format="full"
-                    ).execute()
+                    ).execute(num_retries=5)
                 except Exception:
                     continue
                 # Search headers and snippet+body for the failed recipient email.
