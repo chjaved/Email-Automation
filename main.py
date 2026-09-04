@@ -184,13 +184,11 @@ def cmd_remove_user(args: argparse.Namespace) -> None:
 
 
 def cmd_scan_bounces(args: argparse.Namespace) -> None:
-    """Scan each active mailbox via Gmail API for delivery-failure notices and mark leads bounced."""
-    from sender import detect_bounces_gmail_api
+    """Scan Gmail for bounce/DSN notifications and mark matching leads bounced."""
+    from sender import detect_bounces
 
-    user_id = args.user_id
-    print(f"Scanning bounces for user {user_id}...")
-    marked = detect_bounces_gmail_api(user_id)
-    print(f"Marked {marked} lead(s) as bounced.")
+    marked = detect_bounces(args.user_id)
+    print(f"Found and marked {marked} bounced leads.")
 
 
 def cmd_test_send(args: argparse.Namespace) -> None:
