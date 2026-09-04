@@ -404,12 +404,14 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
         for m in MAILBOX_POOL
     ]
 
+    overall_bounce_rate = (bounces / sent * 100) if sent > 0 else 0.0
     return {
         "stats": {
             "total": total,
             "sent": sent,
             "delivered": delivered,
             "bounced": bounces,
+            "bounce_rate": round(overall_bounce_rate, 2),
             "replies": replies,
             "reply_rate": round(reply_rate, 2),
             "unsubscribed": unsubscribes,
@@ -1849,6 +1851,7 @@ INDEX_HTML = """<!DOCTYPE html>
         ['Sent', stats.sent],
         ['Delivered', stats.delivered],
         ['Bounced', stats.bounced],
+        ['Bounce Rate %', (stats.bounce_rate ?? 0).toFixed(1)],
         ['Replies', stats.replies],
         ['Reply Rate %', stats.reply_rate.toFixed(1)],
         ['Unsubscribed', stats.unsubscribed]
