@@ -567,6 +567,98 @@ def detect_bounces_gmail_api(user_id: int) -> int:
     return marked
 
 
+def detect_bounces(user_id: int) -> int:
+    """Scan every active Gmail mailbox for bounce / DSN notifications and mark
+    the matching leads (for `user_id`) as bounced.
+
+    Searches Gmail for postmaster/mailer-daemon senders as well as common
+    bounce-related subject lines, extracts candidate recipient addresses from
+    the message body, and looks each one up in the leads table. A lead is
+    only marked bounced if it isn't already bounced/replied/unsubscribed.
+
+    Returns the number of leads newly marked as bounced.
+    """
+    from mailboxes import _gmail_service
+
+    query = (
+        "("
+        "from:mailer-daemon@googlemail.com "
+        "OR from:mailer-daemon@google.com "
+        "OR from:postmaster@google.com "
+        "OR subject:(\"Delivery Status Notification\" OR \"Address not found\" "
+        "OR \"Undeliverable\" OR \"Mail delivery failed\" OR \"failure notice\" "
+        "OR \"Returned mail\")"
+        ")"
+    )
+    email_re = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+
+    def _extract_body_text(payload: Dict[str, Any]) -> str:
+        text = ""
+        data = (payload.get("body") or {}).get("data")
+        if data:
+            try:
+                text += base64.urlsafe_b64decode(data.encode()).decode("utf-8", errors="ignore")
+            except Exception:
+                pass
+        for part in payload.get("parts", []) or []:
+            text += _extract_body_text(part)
+        return text
+
+    marked = 0
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        for mailbox in MAILBOX_POOL:
+            if not mailbox.get("active"):
+                continue
+            try:
+                service = _gmail_service(mailbox)
+                resp = service.users().messages().list(
+                    userId="me", q=query, maxResults=500
+                ).execute()
+                messages = resp.get("messages", []) or []
+                logger.info(
+                    "detect_bounces %s: %d candidate DSN messages", mailbox["name"], len(messages)
+                )
+                for m in messages:
+                    try:
+                        msg = service.users().messages().get(
+                            userId="me", id=m["id"], format="full"
+                        ).execute()
+                    except Exception:
+                        continue
+
+                    payload = msg.get("payload", {}) or {}
+                    body_text = (msg.get("snippet") or "") + " " + _extract_body_text(payload)
+                    found_addrs = {a.lower() for a in email_re.findall(body_text)}
+                    if not found_addrs:
+                        continue
+
+                    for addr in found_addrs:
+                        cur.execute(
+                            "SELECT id, status FROM leads WHERE user_id = ? AND email = ?",
+                            (user_id, addr),
+                        )
+                        row = cur.fetchone()
+                        if not row:
+                            continue
+                        if row["status"] in ("bounced", "replied", "unsubscribed"):
+                            continue
+                        reason = (msg.get("snippet") or "Delivery failed")[:300]
+                        set_lead_status(row["id"], "bounced", bounce_reason=reason)
+                        log_event(row["id"], "bounced", reason, mailbox=mailbox["name"])
+                        logger.info(
+                            "Marked lead %s (%s) as bounced via %s",
+                            row["id"], addr, mailbox["name"],
+                        )
+                        marked += 1
+            except Exception as e:
+                logger.warning("detect_bounces failed for mailbox %s: %s", mailbox["name"], e)
+    finally:
+        conn.close()
+    return marked
+
+
 def _all_user_ids() -> List[int]:
     """Return every user that is registered or owns leads."""
     conn = get_conn()
