@@ -33,7 +33,8 @@ if USE_POSTGRES:
     # to close its connection. Without this, a bug (or a huge CSV import)
     # that leaks connections can exhaust Postgres' server-side connection
     # limit and take down every service sharing that database.
-    POSTGRES_POOL_MAX = int(os.getenv("POSTGRES_POOL_MAX", "20"))
+    POSTGRES_POOL_MAX = int(os.getenv("POSTGRES_POOL_MAX", "50"))
+    POSTGRES_POOL_WAIT_SECONDS = float(os.getenv("POSTGRES_POOL_WAIT_SECONDS", "10"))
     _pool = psycopg2.pool.ThreadedConnectionPool(1, POSTGRES_POOL_MAX, DATABASE_URL)
 
     class _PGCursor:
@@ -93,7 +94,19 @@ if USE_POSTGRES:
             _pool.putconn(self._raw)
 
     def get_conn():
-        return _PGConnection(_pool.getconn())
+        # psycopg2's ThreadedConnectionPool.getconn() raises immediately when
+        # the pool is exhausted. Under bursty dashboard load that produces
+        # 500s. Retry with a short backoff so brief spikes queue instead of
+        # failing.
+        import time as _time
+        deadline = _time.monotonic() + POSTGRES_POOL_WAIT_SECONDS
+        while True:
+            try:
+                return _PGConnection(_pool.getconn())
+            except psycopg2.pool.PoolError:
+                if _time.monotonic() >= deadline:
+                    raise
+                _time.sleep(0.05)
 
 else:
     def get_conn() -> sqlite3.Connection:
