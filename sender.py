@@ -513,7 +513,18 @@ def detect_bounces_gmail_api(user_id: int) -> int:
             "AND status NOT IN ('replied','unsubscribed','bounced')",
             (user_id,),
         )
-        sent_leads = {row["email"].lower(): row["id"] for row in cur.fetchall() if row["email"]}
+        # A lead's `email` column can contain multiple whitespace- or
+        # comma-separated addresses (primary + cc). Index every individual
+        # address so DSN lookups (which report one address at a time) hit.
+        sent_leads: Dict[str, int] = {}
+        for row in cur.fetchall():
+            raw = (row["email"] or "").strip()
+            if not raw:
+                continue
+            for part in re.split(r"[\s,;]+", raw):
+                addr = part.strip().lower()
+                if addr and "@" in addr:
+                    sent_leads.setdefault(addr, row["id"])
     finally:
         conn.close()
     if not sent_leads:
@@ -531,7 +542,7 @@ def detect_bounces_gmail_api(user_id: int) -> int:
         "OR subject:\"failure notice\" "
         "OR subject:\"DNS Error\" "
         "OR subject:\"could not be delivered\""
-        ") newer_than:14d"
+        ") newer_than:30d"
     )
     email_re = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
