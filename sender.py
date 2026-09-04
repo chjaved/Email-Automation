@@ -352,6 +352,39 @@ def _due_leads(user_id: int) -> List[sqlite3.Row]:
     return interleaved
 
 
+def _pick_ready_mailbox(
+    conn,
+    ready_at: Dict[str, float],
+    gap_min: int,
+    gap_max: int,
+) -> Optional[Dict[str, Any]]:
+    """Return the next mailbox eligible to send: under its daily cap AND past
+    its per-mailbox cooldown. If some mailbox is under cap but all are still
+    cooling down, sleep just long enough for the earliest to become ready.
+    Returns None only when every active mailbox is at cap for today."""
+    from mailboxes import _sends_today, get_current_cap
+
+    while True:
+        now = time.monotonic()
+        under_cap: List[Dict[str, Any]] = []
+        for mailbox in MAILBOX_POOL:
+            if not mailbox.get("active"):
+                continue
+            if _sends_today(conn, mailbox["name"]) >= get_current_cap(mailbox):
+                continue
+            under_cap.append(mailbox)
+        if not under_cap:
+            return None
+        ready = [m for m in under_cap if ready_at.get(m["name"], 0.0) <= now]
+        if ready:
+            ready.sort(key=lambda m: _sends_today(conn, m["name"]))
+            return ready[0]
+        wait = min(ready_at[m["name"]] for m in under_cap) - now
+        wait = max(0.5, min(wait, 30.0))
+        logger.info("All mailboxes cooling down; sleeping %.1fs", wait)
+        time.sleep(wait)
+
+
 def send_due(user_id: int) -> int:
     from settings import get_send_gap_min, get_send_gap_max
 
@@ -361,6 +394,12 @@ def send_due(user_id: int) -> int:
 
     gap_min = get_send_gap_min(user_id)
     gap_max = get_send_gap_max(user_id)
+    # Per-mailbox cooldown clocks (monotonic seconds). A mailbox is ready when
+    # its ready_at <= now. This means N mailboxes throughput ≈ N × 1/gap,
+    # instead of a single global gap that throttled everything to 1/gap.
+    ready_at: Dict[str, float] = {
+        m["name"]: 0.0 for m in MAILBOX_POOL if m.get("active")
+    }
 
     conn = get_conn()
     cur = conn.cursor()
@@ -381,7 +420,7 @@ def send_due(user_id: int) -> int:
         if not check_bounce_rate_safety(user_id):
             break
 
-        mailbox = get_next_mailbox(conn)
+        mailbox = _pick_ready_mailbox(conn, ready_at, gap_min, gap_max)
         if mailbox is None:
             logger.info("All mailboxes at daily cap. Stopping.")
             break
@@ -447,11 +486,15 @@ def send_due(user_id: int) -> int:
             else:
                 logger.exception("Send failed for lead %s", lead["id"])
 
-        # Randomized delay between sends to avoid spam detection
-        if sent_count < len(due):
-            delay = random.randint(gap_min, gap_max)
-            logger.info("Waiting %ds before next send (user %s)", delay, user_id)
-            time.sleep(delay)
+        # Per-mailbox cooldown: this mailbox won't be picked again until the
+        # gap elapses. Other mailboxes remain available immediately, so total
+        # throughput ≈ N_active_mailboxes × (1 / avg_gap).
+        delay = random.randint(gap_min, gap_max)
+        ready_at[mailbox["name"]] = time.monotonic() + delay
+        logger.info(
+            "Mailbox %s cooldown %ds (user %s, sent this cycle %d)",
+            mailbox["name"], delay, user_id, sent_count,
+        )
 
     conn.close()
     return sent_count
