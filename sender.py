@@ -364,14 +364,25 @@ _MX_TTL_SECONDS = 6 * 3600
 
 def _verify_primary_address(raw_email: str) -> Optional[str]:
     """Return the lowercased primary address if it passes syntax + typo +
-    MX checks. Return None if it should NOT be sent."""
-    from verify import _primary_address, _resolve_mx, TYPO_DOMAINS, _KNOWN_GOOD
+    provider-rule + MX checks. Return None if it should NOT be sent."""
+    from verify import (
+        _primary_address,
+        _resolve_mx,
+        _local_part_is_plausible,
+        TYPO_DOMAINS,
+        _KNOWN_GOOD,
+    )
 
     primary = _primary_address(raw_email)
     if not primary:
         return None
-    domain = primary.split("@", 1)[1]
+    local, domain = primary.split("@", 1)
     if domain in TYPO_DOMAINS:
+        return None
+    # Enforce real provider signup rules (e.g. gmail.com >= 6 chars local).
+    # Catches junk like aa@gmail.com, aai@gmail.com, s82@gmail.com that pass
+    # the MX check because the *domain* is valid.
+    if not _local_part_is_plausible(local, domain):
         return None
     if domain in _KNOWN_GOOD:
         return primary

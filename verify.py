@@ -41,6 +41,45 @@ _KNOWN_GOOD = {
     "icloud.com", "me.com", "aol.com", "proton.me", "protonmail.com",
 }
 
+# Real minimum local-part length enforced by each public provider at signup.
+# Any address on these providers with a shorter local part cannot exist and
+# must not be sent to. Sources: provider signup pages, publicly documented.
+_PROVIDER_MIN_LOCAL_LEN = {
+    "gmail.com": 6,
+    "googlemail.com": 6,
+    "yahoo.com": 4,
+    "yahoo.com.my": 4,
+    "yahoo.co.uk": 4,
+    "ymail.com": 4,
+    "hotmail.com": 1,
+    "outlook.com": 1,
+    "live.com": 1,
+    "msn.com": 1,
+    "icloud.com": 3,
+    "me.com": 3,
+    "aol.com": 3,
+    "proton.me": 1,
+    "protonmail.com": 1,
+}
+
+
+def _local_part_is_plausible(local: str, domain: str) -> bool:
+    """Reject local parts that violate the domain provider's real signup rules
+    OR are structurally implausible (all-digits, no letters, etc.).
+
+    Deliberately conservative: only reject when we're very confident. Common
+    legitimate patterns like 'first.last', 'first_last123', 'firstl' pass."""
+    if not local:
+        return False
+    min_len = _PROVIDER_MIN_LOCAL_LEN.get(domain)
+    if min_len is not None and len(local) < min_len:
+        return False
+    # A local part with zero letters (e.g. '12345', '007') is essentially never
+    # a real inbox on any consumer provider.
+    if not any(c.isalpha() for c in local):
+        return False
+    return True
+
 
 def _resolve_mx(domain: str, timeout: float = 4.0) -> bool:
     """Return True iff `domain` has at least one MX record (or A record as a
@@ -105,6 +144,8 @@ def verify_user_leads(
         return {"checked": 0, "invalid": 0, "domains_ok": 0, "domains_bad": 0}
 
     # Group leads by domain so each unique domain gets one DNS query.
+    # syntax_bad also captures leads whose local-part violates the target
+    # provider's real signup rules (e.g. gmail.com requires >=6 chars).
     by_domain: Dict[str, List[int]] = {}
     syntax_bad: List[int] = []
     for row in rows:
@@ -112,7 +153,10 @@ def verify_user_leads(
         if not primary:
             syntax_bad.append(row["id"])
             continue
-        domain = primary.split("@", 1)[1]
+        local, domain = primary.split("@", 1)
+        if not _local_part_is_plausible(local, domain):
+            syntax_bad.append(row["id"])
+            continue
         by_domain.setdefault(domain, []).append(row["id"])
 
     # Resolve MX for each unique domain in parallel.
