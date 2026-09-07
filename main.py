@@ -135,17 +135,22 @@ def cmd_clean_bounced(args: argparse.Namespace) -> None:
     conn = get_conn()
     try:
         cur = conn.cursor()
-        # Remove child records before deleting leads so the FK constraint passes
-        cur.execute(
-            "DELETE FROM emails WHERE lead_id IN "
-            "(SELECT id FROM leads WHERE user_id = ? AND status = 'bounced')",
-            (args.user_id,),
-        )
-        cur.execute(
-            "DELETE FROM events WHERE lead_id IN "
-            "(SELECT id FROM leads WHERE user_id = ? AND status = 'bounced')",
-            (args.user_id,),
-        )
+        # Delete every child row that has a FK to leads. Order doesn't matter
+        # inside the transaction as long as leads is last. Any table not
+        # present is silently skipped so this stays portable across schemas.
+        child_tables = ("emails", "events", "followup_emails", "email_events", "replies")
+        for tbl in child_tables:
+            try:
+                cur.execute(
+                    f"DELETE FROM {tbl} WHERE lead_id IN "
+                    f"(SELECT id FROM leads WHERE user_id = ? AND status = 'bounced')",
+                    (args.user_id,),
+                )
+            except Exception as e:
+                # Table doesn't exist in this schema — that's fine.
+                conn.rollback()
+                cur = conn.cursor()
+                logger.info("clean-bounced: skipping %s (%s)", tbl, e)
         cur.execute(
             "DELETE FROM leads WHERE user_id = ? AND status = 'bounced'",
             (args.user_id,),
