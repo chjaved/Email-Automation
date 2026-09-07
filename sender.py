@@ -527,7 +527,9 @@ def _should_check_inbox(user_id: int) -> bool:
         return True
     try:
         last_dt = datetime.fromisoformat(last)
-        return (datetime.now(ZoneInfo(TIMEZONE)) - last_dt).total_seconds() >= 300
+        # 15-minute cadence: bounce scans can take minutes per mailbox and
+        # must not monopolise the send loop.
+        return (datetime.now(ZoneInfo(TIMEZONE)) - last_dt).total_seconds() >= 900
     except Exception:
         return True
 
@@ -573,7 +575,7 @@ def detect_bounces_gmail_api(user_id: int) -> int:
     if not sent_leads:
         return 0
 
-    query = (
+    base_query = (
         "("
         "from:mailer-daemon OR from:postmaster OR from:mail-daemon "
         "OR subject:\"Delivery Status Notification\" "
@@ -585,13 +587,26 @@ def detect_bounces_gmail_api(user_id: int) -> int:
         "OR subject:\"failure notice\" "
         "OR subject:\"DNS Error\" "
         "OR subject:\"could not be delivered\""
-        ") newer_than:30d"
+        ")"
     )
     email_re = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
     for mailbox in MAILBOX_POOL:
         if not mailbox.get("active"):
             continue
+        # Incremental: only fetch DSNs newer than the last successful scan for
+        # this mailbox. Falls back to 30 days on first ever run. Prevents
+        # walking thousands of already-processed DSNs on every cycle.
+        state_key = _state_key(user_id, f"bounce_scan_epoch:{mailbox['name']}")
+        last_epoch_raw = _get_state(state_key)
+        try:
+            last_epoch = int(last_epoch_raw) if last_epoch_raw else 0
+        except Exception:
+            last_epoch = 0
+        if last_epoch <= 0:
+            last_epoch = int(time.time()) - 30 * 24 * 3600
+        scan_started = int(time.time())
+        query = f"{base_query} after:{last_epoch}"
         try:
             service = _gmail_service(mailbox)
             # Paginate to cover large numbers of DSNs.
@@ -653,6 +668,8 @@ def detect_bounces_gmail_api(user_id: int) -> int:
                         marked += 1
                     except Exception:
                         logger.exception("Failed to mark lead %s bounced", lead_id)
+            # Record scan cutoff — overlap 60s to avoid missing edge messages.
+            _set_state(state_key, str(max(0, scan_started - 60)))
         except Exception as e:
             logger.warning("Gmail bounce scan failed for mailbox %s: %s", mailbox["name"], e)
     return marked
