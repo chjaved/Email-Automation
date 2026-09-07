@@ -183,6 +183,22 @@ def cmd_remove_user(args: argparse.Namespace) -> None:
     print(f"Removed user {user_id} and all related data.")
 
 
+def cmd_verify_emails(args: argparse.Namespace) -> None:
+    """Bulk-verify recipient addresses (syntax + typo + MX) and mark bad ones
+    as status='invalid' so the sender skips them."""
+    from verify import verify_user_leads
+
+    user_id = args.user_id
+    print(f"Verifying leads for user {user_id} (this may take a few minutes)...")
+    stats = verify_user_leads(user_id, workers=args.workers)
+    print(f"Checked:          {stats['checked']}")
+    print(f"Marked invalid:   {stats['invalid']}")
+    print(f"Domains good:     {stats['domains_ok']}")
+    print(f"Domains bad:      {stats['domains_bad']}")
+    if stats.get("sample_bad_domains"):
+        print(f"Sample bad doms:  {stats['sample_bad_domains']}")
+
+
 def cmd_scan_bounces(args: argparse.Namespace) -> None:
     """Scan each active mailbox via Gmail API for delivery-failure notices and mark leads bounced."""
     from sender import detect_bounces_gmail_api
@@ -259,6 +275,14 @@ def main(argv: list = None) -> int:
     p_scan = sub.add_parser("scan-bounces", help="Scan Gmail mailboxes for delivery-failure notices and mark leads bounced")
     p_scan.add_argument("--user-id", type=int, default=2, help="User whose leads to scan")
     p_scan.set_defaults(func=cmd_scan_bounces)
+
+    p_verify = sub.add_parser(
+        "verify-emails",
+        help="Verify recipient addresses (syntax + typo domains + MX record) and mark bad ones as invalid",
+    )
+    p_verify.add_argument("--user-id", type=int, default=2, help="User whose leads to verify")
+    p_verify.add_argument("--workers", type=int, default=20, help="Concurrent DNS lookups")
+    p_verify.set_defaults(func=cmd_verify_emails)
 
     p_remove = sub.add_parser("remove-user", help="Delete a user and all associated data")
     p_remove.add_argument("--user-id", type=int, required=True, help="User ID to remove")
