@@ -352,6 +352,38 @@ def _due_leads(user_id: int) -> List[sqlite3.Row]:
     return interleaved
 
 
+# ---------------------------------------------------------------------------
+# Pre-send address verification (syntax + typo-domain + MX)
+# ---------------------------------------------------------------------------
+# Cache MX results in-process so a single 24k-lead sweep does at most a few
+# hundred DNS queries. TTL = 6h so if a domain's MX comes back later the next
+# cycle picks it up. Cleared on process restart.
+_MX_CACHE: Dict[str, tuple] = {}  # domain -> (ok: bool, expires_epoch: float)
+_MX_TTL_SECONDS = 6 * 3600
+
+
+def _verify_primary_address(raw_email: str) -> Optional[str]:
+    """Return the lowercased primary address if it passes syntax + typo +
+    MX checks. Return None if it should NOT be sent."""
+    from verify import _primary_address, _resolve_mx, TYPO_DOMAINS, _KNOWN_GOOD
+
+    primary = _primary_address(raw_email)
+    if not primary:
+        return None
+    domain = primary.split("@", 1)[1]
+    if domain in TYPO_DOMAINS:
+        return None
+    if domain in _KNOWN_GOOD:
+        return primary
+    now = time.time()
+    hit = _MX_CACHE.get(domain)
+    if hit and hit[1] > now:
+        return primary if hit[0] else None
+    ok = _resolve_mx(domain, timeout=4.0)
+    _MX_CACHE[domain] = (ok, now + _MX_TTL_SECONDS)
+    return primary if ok else None
+
+
 def _pick_ready_mailbox(
     conn,
     ready_at: Dict[str, float],
@@ -415,6 +447,17 @@ def send_due(user_id: int) -> int:
             continue
 
         if is_final(lead["status"]):
+            continue
+
+        # Pre-send verification: syntax + typo-domain + MX record. Skips the
+        # send entirely and marks the lead invalid if the address is
+        # unreachable — this is what actually stops the bounce flood at source.
+        primary_addr = _verify_primary_address(lead["email"] or "")
+        if primary_addr is None:
+            set_lead_status(lead["id"], "invalid")
+            log_event(lead["id"], "invalid", "Address failed pre-send verification")
+            logger.info("Skipping lead %s: pre-send verification failed (%s)",
+                        lead["id"], lead["email"])
             continue
 
         if not check_bounce_rate_safety(user_id):
