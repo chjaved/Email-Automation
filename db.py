@@ -81,6 +81,12 @@ if USE_POSTGRES:
         def commit(self):
             self._raw.commit()
 
+        def rollback(self):
+            try:
+                self._raw.rollback()
+            except Exception:
+                pass
+
         def close(self):
             """Return the connection to the pool instead of actually closing the
             socket, so the app never opens more than POSTGRES_POOL_MAX connections."""

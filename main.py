@@ -131,26 +131,46 @@ def cmd_reset_pause(args: argparse.Namespace) -> None:
     print("Campaign pause reset.")
 
 
+def _existing_tables(conn) -> set:
+    """Return the set of table names visible to this connection. Works on both
+    Postgres (information_schema) and SQLite (sqlite_master)."""
+    from db import USE_POSTGRES
+
+    cur = conn.cursor()
+    if USE_POSTGRES:
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+        )
+    else:
+        cur.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    rows = cur.fetchall()
+    out = set()
+    for r in rows:
+        # RealDictCursor rows on Postgres act like dicts; sqlite Row acts like tuple.
+        if isinstance(r, dict):
+            out.add(list(r.values())[0])
+        else:
+            out.add(r[0])
+    return out
+
+
 def cmd_clean_bounced(args: argparse.Namespace) -> None:
+    """Delete every 'bounced' lead for user_id and cascade-delete any FK
+    child rows in known related tables."""
     conn = get_conn()
     try:
+        present = _existing_tables(conn)
         cur = conn.cursor()
-        # Delete every child row that has a FK to leads. Order doesn't matter
-        # inside the transaction as long as leads is last. Any table not
-        # present is silently skipped so this stays portable across schemas.
-        child_tables = ("emails", "events", "followup_emails", "email_events", "replies")
-        for tbl in child_tables:
-            try:
-                cur.execute(
-                    f"DELETE FROM {tbl} WHERE lead_id IN "
-                    f"(SELECT id FROM leads WHERE user_id = ? AND status = 'bounced')",
-                    (args.user_id,),
-                )
-            except Exception as e:
-                # Table doesn't exist in this schema — that's fine.
-                conn.rollback()
-                cur = conn.cursor()
-                logger.info("clean-bounced: skipping %s (%s)", tbl, e)
+        # Ordered by "most likely to have FK -> leads.id"; unknown tables are
+        # silently skipped so this stays portable across schema versions.
+        for tbl in ("emails", "events", "followup_emails", "email_events", "replies"):
+            if tbl not in present:
+                continue
+            cur.execute(
+                f"DELETE FROM {tbl} WHERE lead_id IN "
+                f"(SELECT id FROM leads WHERE user_id = ? AND status = 'bounced')",
+                (args.user_id,),
+            )
         cur.execute(
             "DELETE FROM leads WHERE user_id = ? AND status = 'bounced'",
             (args.user_id,),
