@@ -53,7 +53,7 @@ MAILBOX_POOL = [
         "token": BASE_DIR / "token_info.json",
         "daily_cap": 1000,
         "active": True,
-        "warmup_day": 4,
+        "warmup_day": 8,
     },
     {
         "name": "contact",
