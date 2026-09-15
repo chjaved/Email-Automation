@@ -177,6 +177,7 @@ def _build_subject(company_name: str) -> str:
     idx = _next_subject_index()
     template = SUBJECT_TEMPLATES[idx]
     subject = template.format(company_name=company_name).strip()
+    subject = " ".join(subject.split())  # remove any stray newlines/tabs
     words = subject.split()
     words = [w for w in words if w.lower().strip("?.!,;:") not in FORBIDDEN_WORDS]
     return " ".join(words)
@@ -484,6 +485,7 @@ def _generate_from_sample(
                     # If no placeholder was replaced, append company name
                     if company_name.lower() not in subject.lower():
                         subject = f"{subject} – {company_name}"
+                    subject = " ".join(subject.split())
                     break
         if not subject:
             subject_prompt = (
@@ -510,6 +512,7 @@ def _generate_from_sample(
         if not subject:
             subject = fallback_subject
 
+        subject = " ".join(subject.split())  # strip newlines/extra whitespace
         return {"subject": subject, "body": body}
     except Exception as e:
         logger.warning("Sample-based generation failed, using template as-is: %s", e)

@@ -266,6 +266,14 @@ def _attach_pdf(msg: EmailMessage, user_id: int = 0) -> None:
     msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=path.name)
 
 
+def _clean_header(value: str) -> str:
+    """Remove linefeed/carriage-return characters from header values so
+    Python's email library does not raise ValueError."""
+    if not value:
+        return value
+    return " ".join(value.replace("\r", " ").replace("\n", " ").split())
+
+
 def _build_message(
     to: str,
     from_addr: str,
@@ -277,7 +285,13 @@ def _build_message(
 ) -> EmailMessage:
     from settings import get_from_display_name, get_cc_enabled
 
-    display = get_from_display_name(user_id) or FROM_DISPLAY_NAME
+    to = _clean_header(to)
+    from_addr = _clean_header(from_addr)
+    subject = _clean_header(subject)
+    in_reply_to = _clean_header(in_reply_to)
+    cc = [_clean_header(c) for c in (cc or []) if c]
+
+    display = _clean_header(get_from_display_name(user_id) or FROM_DISPLAY_NAME)
     msg = EmailMessage()
     msg["From"] = email.utils.formataddr((display, from_addr))
     msg["To"] = to
