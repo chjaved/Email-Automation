@@ -25,6 +25,7 @@ _PLACEHOLDER_RE = re.compile(r"\?")
 
 if USE_POSTGRES:
     import psycopg2
+    import psycopg2.errors
     import psycopg2.extras
     import psycopg2.pool
 
@@ -214,9 +215,33 @@ def _add_missing_columns_postgres(conn) -> None:
     }
     cur = conn.cursor()
     for table, defs in columns.items():
+        # Check information_schema first so we only ever issue an ALTER TABLE
+        # for columns that are actually missing. This avoids taking an
+        # unnecessary lock on tables that another service (web/worker) may
+        # already be migrating concurrently, which is what previously caused
+        # `psycopg2.errors.DeadlockDetected` when both processes started at
+        # the same time.
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+            (table,),
+        )
+        existing = {row["column_name"] for row in cur.fetchall()}
         for col, dtype, default in defs:
+            if col in existing:
+                continue
             default_sql = "" if default == "NULL" else f" DEFAULT {default}"
-            cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {dtype}{default_sql}")
+            try:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {dtype}{default_sql}")
+            except psycopg2.errors.DeadlockDetected:
+                # Another service (web/worker) is concurrently running this
+                # same migration and holds a conflicting lock. The column is
+                # either already being added or already exists, so it's safe
+                # to ignore this and move on rather than crash the process.
+                conn.rollback()
+            except psycopg2.errors.DuplicateColumn:
+                # Lost a race with another service that added the column
+                # first between our existence check and the ALTER TABLE.
+                conn.rollback()
 
 
 SQLITE_SCHEMA = """
