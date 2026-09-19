@@ -995,29 +995,39 @@ def send_lead_now(lead_id: int, user_id: int) -> Dict[str, Any]:
         log_event(lead_id, "invalid", "Address failed pre-send verification")
         raise ValueError(f"Lead {lead_id} email failed verification: {lead['email']}")
 
-    conn = get_conn()
-    try:
-        mailbox = get_next_mailbox(conn)
-    finally:
-        conn.close()
-    if mailbox is None:
-        raise RuntimeError("All mailboxes at daily cap")
+    from settings import get_smtp_user, get_smtp_password
+
+    use_smtp = bool(get_smtp_user(user_id) and get_smtp_password(user_id))
+    mailbox = None
+    if not use_smtp:
+        conn = get_conn()
+        try:
+            mailbox = get_next_mailbox(conn)
+        finally:
+            conn.close()
+        if mailbox is None:
+            raise RuntimeError("All mailboxes at daily cap")
 
     step = lead["sequence_step"] or 0
     in_reply_to = lead["gmail_message_id_header"] or ""
     thread_id = lead["gmail_thread_id"] or ""
 
-    result = _send_mailbox_message(lead, mailbox)
+    result = (
+        _send_smtp_message(lead, user_id)
+        if use_smtp
+        else _send_mailbox_message(lead, mailbox)
+    )
     if not result:
         raise RuntimeError("Send failed for unknown reason")
 
+    mailbox_name = mailbox["name"] if mailbox else "smtp"
     now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
     next_step = step + 1
 
     if step == 0:
-        log_event(lead_id, "sent", mailbox=mailbox["name"])
+        log_event(lead_id, "sent", mailbox=mailbox_name)
     else:
-        log_event(lead_id, f"followup_{step}", f"Step {step} follow-up", mailbox=mailbox["name"])
+        log_event(lead_id, f"followup_{step}", f"Step {step} follow-up", mailbox=mailbox_name)
 
     if step == len(FOLLOWUP_SCHEDULE):
         new_status = "completed"
@@ -1035,7 +1045,7 @@ def send_lead_now(lead_id: int, user_id: int) -> Dict[str, Any]:
         gmail_thread_id=result["thread_id"],
         gmail_message_id_header=result.get("message_id_header", ""),
         scheduled_at=None,
-        sent_from_mailbox=mailbox["name"],
+        sent_from_mailbox=mailbox_name,
     )
 
     return {
