@@ -407,3 +407,51 @@ def send_test_email(
     service.users().messages().send(userId="me", body={"raw": raw}).execute()
     logger.info("Test email sent from %s to %s", from_addr, to_address)
     return {"subject": subject, "body": body, "from": from_addr, "to": to_address}
+
+
+# ---------------------------------------------------------------------------
+# Sending via SMTP (user-specific credentials)
+# ---------------------------------------------------------------------------
+def send_message_smtp(lead: sqlite3.Row, user_id: int) -> Optional[Dict[str, str]]:
+    """Build and send one email via the user's own Gmail SMTP credentials."""
+    from settings import get_cc_enabled, get_smtp_user, get_smtp_password, get_from_alias
+
+    all_emails = [e.strip() for e in (lead["email"] or "").split() if e.strip()]
+    to = all_emails[0] if all_emails else (lead["email"] or "").strip()
+    extra_cc = [e for e in all_emails[1:] if _EMAIL_RE.match(e)]
+
+    smtp_user = get_smtp_user(user_id)
+    smtp_password = get_smtp_password(user_id)
+    from_addr = get_from_alias(user_id) or smtp_user
+
+    if not to or not _EMAIL_RE.match(to):
+        raise InvalidRecipientError(f"Invalid To address: {to!r}")
+
+    email_data = _get_email_body(lead)
+    subject = email_data["subject"]
+    body = email_data["body"]
+    step = lead["sequence_step"] or 0
+    if step > 0:
+        if not subject.lower().startswith("re:"):
+            subject = f"Re: {subject}"
+        body = get_followup_body(lead, step)
+
+    raw_cc = (DEFAULT_CC_EMAILS if get_cc_enabled(user_id) else []) + extra_cc
+    cc_list = [c for c in raw_cc if c and _EMAIL_RE.match(c)]
+    in_reply_to = lead["gmail_message_id_header"] or ""
+    msg = _build_message(to, from_addr, subject, body, user_id, in_reply_to=in_reply_to, cc=cc_list)
+
+    import smtplib
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
+        smtp.starttls()
+        smtp.login(smtp_user, smtp_password)
+        smtp.send_message(msg)
+
+    logger.info("Sent to %s from %s via SMTP (step %s)", to, from_addr, step)
+    return {
+        "message_id": msg["Message-ID"] or "",
+        "thread_id": "",
+        "subject": subject,
+        "body": body,
+        "message_id_header": msg["Message-ID"],
+    }

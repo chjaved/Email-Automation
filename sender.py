@@ -429,7 +429,7 @@ def _pick_ready_mailbox(
 
 
 def send_due(user_id: int) -> int:
-    from settings import get_send_gap_min, get_send_gap_max
+    from settings import get_send_gap_min, get_send_gap_max, get_smtp_user, get_smtp_password, get_daily_send_cap
 
     due = _due_leads(user_id)
     if not due:
@@ -437,6 +437,13 @@ def send_due(user_id: int) -> int:
 
     gap_min = get_send_gap_min(user_id)
     gap_max = get_send_gap_max(user_id)
+
+    # Decide send path: per-user SMTP (e.g. info@onlinejobs.my) when configured,
+    # otherwise fall back to the shared Gmail-API mailbox pool.
+    smtp_user = get_smtp_user(user_id)
+    smtp_password = get_smtp_password(user_id)
+    use_smtp = bool(smtp_user and smtp_password)
+
     # Per-mailbox cooldown clocks (monotonic seconds). A mailbox is ready when
     # its ready_at <= now. This means N mailboxes throughput ≈ N × 1/gap,
     # instead of a single global gap that throttled everything to 1/gap.
@@ -447,6 +454,17 @@ def send_due(user_id: int) -> int:
     conn = get_conn()
     cur = conn.cursor()
     sent_count = 0
+
+    # For SMTP path, enforce the user's own daily_send_cap by counting sends today.
+    smtp_sent_today = 0
+    if use_smtp:
+        today_iso = datetime.now(ZoneInfo(TIMEZONE)).date().isoformat()
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND sent_at IS NOT NULL AND substr(sent_at, 1, 10) = ?",
+            (user_id, today_iso),
+        )
+        smtp_sent_today = cur.fetchone()["n"]
+
     for lead in due:
         if is_paused(user_id):
             logger.warning("Campaign is paused; stopping send loop.")
@@ -474,29 +492,38 @@ def send_due(user_id: int) -> int:
         if not check_bounce_rate_safety(user_id):
             break
 
-        mailbox = _pick_ready_mailbox(conn, ready_at, gap_min, gap_max)
-        if mailbox is None:
-            logger.info("All mailboxes at daily cap. Stopping.")
-            break
+        mailbox = None
+        if use_smtp:
+            if smtp_sent_today >= get_daily_send_cap(user_id):
+                logger.info("SMTP daily cap reached for user %s. Stopping.", user_id)
+                break
+        else:
+            mailbox = _pick_ready_mailbox(conn, ready_at, gap_min, gap_max)
+            if mailbox is None:
+                logger.info("All mailboxes at daily cap. Stopping.")
+                break
 
         step = lead["sequence_step"] or 0
         in_reply_to = lead["gmail_message_id_header"] or ""
         thread_id = lead["gmail_thread_id"] or ""
 
         try:
-            result = _send_mailbox_message(lead, mailbox)
+            if use_smtp:
+                result = _send_smtp_message(lead, user_id)
+            else:
+                result = _send_mailbox_message(lead, mailbox)
             if result:
                 now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
                 next_step = step + 1
 
                 if step == 0:
-                    log_event(lead["id"], "sent", mailbox=mailbox["name"])
+                    log_event(lead["id"], "sent", mailbox=mailbox["name"] if mailbox else "smtp")
                 else:
                     log_event(
                         lead["id"],
                         f"followup_{step}",
                         f"Step {step} follow-up",
-                        mailbox=mailbox["name"],
+                        mailbox=mailbox["name"] if mailbox else "smtp",
                     )
 
                 if step == len(FOLLOWUP_SCHEDULE):
@@ -515,22 +542,31 @@ def send_due(user_id: int) -> int:
                     gmail_thread_id=result["thread_id"],
                     gmail_message_id_header=result.get("message_id_header", ""),
                     scheduled_at=None,
-                    sent_from_mailbox=mailbox["name"],
+                    sent_from_mailbox=mailbox["name"] if mailbox else "smtp",
                 )
                 sent_count += 1
+                if use_smtp:
+                    smtp_sent_today += 1
                 logger.info(
-                    "Marked lead %s as %s (step %d) via mailbox %s",
+                    "Marked lead %s as %s (step %d) via %s",
                     lead["id"],
                     new_status,
                     step,
-                    mailbox["name"],
+                    mailbox["name"] if mailbox else "smtp",
                 )
         except Exception as e:
             reason = _classify_send_failure(e)
             if reason:
                 try:
-                    set_lead_status(lead["id"], "bounced", bounce_reason=reason)
-                    log_event(lead["id"], "bounced", reason, mailbox=mailbox["name"])
+                    now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
+                    set_lead_status(
+                        lead["id"],
+                        "bounced",
+                        bounce_reason=reason,
+                        sent_at=now,
+                        sent_from_mailbox=mailbox["name"] if mailbox else "smtp",
+                    )
+                    log_event(lead["id"], "bounced", reason, mailbox=mailbox["name"] if mailbox else "smtp")
                     logger.warning(
                         "Marked lead %s as bounced (invalid recipient): %s",
                         lead["id"], reason,
@@ -544,11 +580,16 @@ def send_due(user_id: int) -> int:
         # gap elapses. Other mailboxes remain available immediately, so total
         # throughput ≈ N_active_mailboxes × (1 / avg_gap).
         delay = random.randint(gap_min, gap_max)
-        ready_at[mailbox["name"]] = time.monotonic() + delay
-        logger.info(
-            "Mailbox %s cooldown %ds (user %s, sent this cycle %d)",
-            mailbox["name"], delay, user_id, sent_count,
-        )
+        if mailbox is not None:
+            ready_at[mailbox["name"]] = time.monotonic() + delay
+            logger.info(
+                "Mailbox %s cooldown %ds (user %s, sent this cycle %d)",
+                mailbox["name"], delay, user_id, sent_count,
+            )
+        else:
+            # SMTP path: single sender, so pace each send by the gap.
+            logger.info("SMTP cooldown %ds (user %s, sent this cycle %d)", delay, user_id, sent_count)
+            time.sleep(delay)
 
     conn.close()
     return sent_count
@@ -948,6 +989,12 @@ def send_lead_now(lead_id: int, user_id: int) -> Dict[str, Any]:
     if is_final(lead["status"]):
         raise ValueError(f"Lead {lead_id} is already in a final state: {lead['status']}")
 
+    primary_addr = _verify_primary_address(lead["email"] or "")
+    if primary_addr is None:
+        set_lead_status(lead_id, "invalid")
+        log_event(lead_id, "invalid", "Address failed pre-send verification")
+        raise ValueError(f"Lead {lead_id} email failed verification: {lead['email']}")
+
     conn = get_conn()
     try:
         mailbox = get_next_mailbox(conn)
@@ -999,6 +1046,16 @@ def send_lead_now(lead_id: int, user_id: int) -> Dict[str, Any]:
         "new_status": new_status,
         "subject": result["subject"],
     }
+
+
+# ---------------------------------------------------------------------------
+# SMTP send helper (per-user SMTP credentials)
+# ---------------------------------------------------------------------------
+def _send_smtp_message(lead: sqlite3.Row, user_id: int) -> Optional[Dict[str, str]]:
+    """Wrapper around mailboxes.send_message_smtp so sender.py can use the
+    same send + update flow as the Gmail-API mailbox path."""
+    from mailboxes import send_message_smtp
+    return send_message_smtp(lead, user_id)
 
 
 # ---------------------------------------------------------------------------
