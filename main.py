@@ -246,6 +246,21 @@ def cmd_test_send(args: argparse.Namespace) -> None:
     print(f"  Subject: {result['subject']}")
 
 
+def cmd_cleanup_and_test(args: argparse.Namespace) -> None:
+    """Remove user 2 entirely, then send a test email from user 1."""
+    print("Step 1/2: Removing user 2...")
+    cmd_remove_user(argparse.Namespace(user_id=2))
+
+    print("Step 2/2: Sending test email...")
+    cmd_test_send(argparse.Namespace(
+        email="chjaved649@gmail.com",
+        company="Test Company",
+        industry="cleaning",
+    ))
+
+    print("cleanup-and-test complete.")
+
+
 def cmd_auth_mailboxes(args: argparse.Namespace) -> None:
     """Run OAuth flow once for each configured mailbox to generate token files."""
     for mailbox in MAILBOX_POOL:
@@ -318,6 +333,12 @@ def main(argv: list = None) -> int:
     p_test.add_argument("--company", default="Test Company", help="Recipient company name")
     p_test.add_argument("--industry", default="cleaning", help="Industry (e.g. cleaning, construction, hotel)")
     p_test.set_defaults(func=cmd_test_send)
+
+    p_cleanup_test = sub.add_parser(
+        "cleanup-and-test",
+        help="Remove user 2 and send a test email from user 1 to chjaved649@gmail.com",
+    )
+    p_cleanup_test.set_defaults(func=cmd_cleanup_and_test)
 
     p_auth = sub.add_parser("auth-mailboxes", help="Run OAuth flow for all configured mailboxes")
     p_auth.set_defaults(func=cmd_auth_mailboxes)
