@@ -155,7 +155,7 @@ def get_next_mailbox(conn=None) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Message building (mirrors sender.py helpers but lives here to avoid cycles)
 # ---------------------------------------------------------------------------
-_SIGNATURE_BLOCK_RE = re.compile(r"\n\n(Kind regards,\n\n.*?)(\n\n-+\n.*)?$", re.DOTALL)
+_SIGNATURE_BLOCK_RE = re.compile(r"\n\n((?:Kind|Best) regards,\n\n.*?)(\n\n-+\n.*)?$", re.DOTALL)
 
 
 def _split_signature(body: str) -> tuple:
