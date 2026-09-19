@@ -579,7 +579,9 @@ def send_due(user_id: int) -> int:
         # Per-mailbox cooldown: this mailbox won't be picked again until the
         # gap elapses. Other mailboxes remain available immediately, so total
         # throughput ≈ N_active_mailboxes × (1 / avg_gap).
-        delay = random.randint(gap_min, gap_max)
+        # Re-read the gap each send so dashboard changes apply without waiting
+        # for the next send_due cycle.
+        delay = random.randint(get_send_gap_min(user_id), get_send_gap_max(user_id))
         if mailbox is not None:
             ready_at[mailbox["name"]] = time.monotonic() + delay
             logger.info(
