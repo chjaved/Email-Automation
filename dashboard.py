@@ -22,7 +22,12 @@ from settings import (
     add_attachment,
     delete_attachment,
     get_attachment_by_id,
+    get_daily_send_cap,
+    get_from_alias,
+    get_from_display_name,
     get_public_settings,
+    get_smtp_password,
+    get_smtp_user,
     invalidate_generated_emails,
     list_attachments,
     update_settings,
@@ -377,32 +382,67 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
             "sent_today": row["sent_today"],
         }
 
-    mailbox_stats = []
-    for m in MAILBOX_POOL:
-        sent_today = stats_by_mailbox.get(m["name"], {}).get("sent_today", 0)
-        total_sent = stats_by_mailbox.get(m["name"], {}).get("total_sent", 0)
-        cap_today = get_current_cap(m)
-        if cap_today == 0:
+    # Determine whether this user sends via their own SMTP credentials or
+    # via the shared Gmail-API mailbox pool. Users with SMTP credentials get
+    # a single "mailbox" entry reflecting their own Gmail account + alias.
+    smtp_user = get_smtp_user(user_id) or ""
+    smtp_pass = get_smtp_password(user_id) or ""
+    from_alias = get_from_alias(user_id) or ""
+    display_name = get_from_display_name(user_id) or ""
+    uses_smtp = bool(smtp_user and smtp_pass)
+
+    if uses_smtp:
+        smtp_name = "smtp"
+        smtp_address = from_alias or smtp_user
+        smtp_sent_today = stats_by_mailbox.get(smtp_name, {}).get("sent_today", 0)
+        smtp_total_sent = stats_by_mailbox.get(smtp_name, {}).get("total_sent", 0)
+        smtp_cap_today = get_daily_send_cap(user_id)
+        if smtp_cap_today == 0:
             color = "red"
         else:
-            pct = sent_today / cap_today
+            pct = smtp_sent_today / smtp_cap_today
             color = "green" if pct < 0.8 else ("orange" if pct < 1.0 else "red")
-        mailbox_stats.append(
+        mailbox_stats = [
             {
-                "name": m["name"],
-                "address": m["alias"],
-                "sent_today": sent_today,
-                "total_sent": total_sent,
-                "cap_today": cap_today,
-                "active": m["active"],
+                "name": smtp_name,
+                "address": smtp_address,
+                "sent_today": smtp_sent_today,
+                "total_sent": smtp_total_sent,
+                "cap_today": smtp_cap_today,
+                "active": True,
                 "color": color,
             }
-        )
+        ]
+        mailbox_caps = [
+            {"name": smtp_name, "address": smtp_address, "cap_today": smtp_cap_today, "active": True}
+        ]
+    else:
+        mailbox_stats = []
+        for m in MAILBOX_POOL:
+            sent_today = stats_by_mailbox.get(m["name"], {}).get("sent_today", 0)
+            total_sent = stats_by_mailbox.get(m["name"], {}).get("total_sent", 0)
+            cap_today = get_current_cap(m)
+            if cap_today == 0:
+                color = "red"
+            else:
+                pct = sent_today / cap_today
+                color = "green" if pct < 0.8 else ("orange" if pct < 1.0 else "red")
+            mailbox_stats.append(
+                {
+                    "name": m["name"],
+                    "address": m["alias"],
+                    "sent_today": sent_today,
+                    "total_sent": total_sent,
+                    "cap_today": cap_today,
+                    "active": m["active"],
+                    "color": color,
+                }
+            )
 
-    mailbox_caps = [
-        {"name": m["name"], "address": m["alias"], "cap_today": get_current_cap(m), "active": m["active"]}
-        for m in MAILBOX_POOL
-    ]
+        mailbox_caps = [
+            {"name": m["name"], "address": m["alias"], "cap_today": get_current_cap(m), "active": m["active"]}
+            for m in MAILBOX_POOL
+        ]
 
     overall_bounce_rate = (bounces / sent * 100) if sent > 0 else 0.0
     return {
