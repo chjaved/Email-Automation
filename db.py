@@ -165,6 +165,9 @@ def _add_missing_columns_sqlite(conn) -> None:
             ("send_gap_max", "INTEGER", "300"),
             ("daily_send_cap", "INTEGER", "300"),
         ],
+        "users": [
+            ("disabled", "INTEGER", "0"),
+        ],
     }
     for table, defs in columns.items():
         cur = conn.execute(f"PRAGMA table_info({table})")
@@ -210,6 +213,9 @@ def _add_missing_columns_postgres(conn) -> None:
             ("send_gap_min", "INTEGER", "120"),
             ("send_gap_max", "INTEGER", "300"),
             ("daily_send_cap", "INTEGER", "300"),
+        ],
+        "users": [
+            ("disabled", "BOOLEAN", "false"),
         ],
     }
     cur = conn.cursor()
@@ -289,7 +295,8 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     is_admin INTEGER DEFAULT 0,
-    created_at TEXT
+    created_at TEXT,
+    disabled INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS user_settings (
@@ -404,7 +411,8 @@ POSTGRES_SCHEMA_STATEMENTS = [
         email TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         is_admin INTEGER DEFAULT 0,
-        created_at TEXT
+        created_at TEXT,
+        disabled BOOLEAN DEFAULT false
     )
     """,
     """
