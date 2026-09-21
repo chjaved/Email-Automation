@@ -139,6 +139,113 @@ def get_daily_send_cap(user_id: int) -> int:
     return 300
 
 
+# ---------------------------------------------------------------------------
+# Per-user SMTP mailbox pool (smtp_mailboxes table)
+# ---------------------------------------------------------------------------
+def list_smtp_mailboxes(user_id: int) -> list:
+    """All rows in smtp_mailboxes for the user (passwords decrypted)."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM smtp_mailboxes WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        out.append(
+            {
+                "id": r["id"],
+                "smtp_user": (r["smtp_user"] or "").strip(),
+                "smtp_password": decrypt_secret(r["smtp_password_enc"] or ""),
+                "from_alias": (r["from_alias"] or "").strip(),
+                "display_name": (r["display_name"] or "").strip(),
+                "daily_cap": int(r["daily_cap"] or 300),
+                "active": bool(r["active"]),
+            }
+        )
+    return out
+
+
+def get_active_smtp_mailboxes(user_id: int) -> list:
+    """Active SMTP mailboxes for the user. Falls back to the single legacy
+    smtp_user/smtp_password fields when the pool table is empty, so existing
+    single-mailbox users keep working unchanged."""
+    mbs = [m for m in list_smtp_mailboxes(user_id) if m["active"]]
+    if mbs:
+        return mbs
+    u, p = get_smtp_user(user_id), get_smtp_password(user_id)
+    if u and p:
+        return [
+            {
+                "id": None,
+                "smtp_user": u,
+                "smtp_password": p,
+                "from_alias": get_from_alias(user_id),
+                "display_name": get_from_display_name(user_id),
+                "daily_cap": get_daily_send_cap(user_id),
+                "active": True,
+            }
+        ]
+    return []
+
+
+def upsert_smtp_mailbox(
+    user_id: int,
+    smtp_user: str,
+    smtp_password: Optional[str] = None,
+    from_alias: str = "",
+    display_name: str = "",
+    daily_cap: int = 300,
+    active: bool = True,
+) -> int:
+    """Insert or update an smtp_mailboxes row keyed on (user_id, smtp_user).
+    Blank password keeps the existing one."""
+    smtp_user = (smtp_user or "").strip()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, smtp_password_enc FROM smtp_mailboxes WHERE user_id = ? AND smtp_user = ?",
+            (user_id, smtp_user),
+        )
+        row = cur.fetchone()
+        enc = encrypt_secret(smtp_password) if smtp_password else (row["smtp_password_enc"] if row else "")
+        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+        if row:
+            cur.execute(
+                """UPDATE smtp_mailboxes SET smtp_password_enc = ?, from_alias = ?,
+                display_name = ?, daily_cap = ?, active = ? WHERE id = ?""",
+                (enc, from_alias, display_name, daily_cap, 1 if active else 0, row["id"]),
+            )
+            mb_id = row["id"]
+        else:
+            cur.execute(
+                """INSERT INTO smtp_mailboxes
+                (user_id, smtp_user, smtp_password_enc, from_alias, display_name, daily_cap, active, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, smtp_user, enc, from_alias, display_name, daily_cap, 1 if active else 0, now),
+            )
+            mb_id = getattr(cur, "lastrowid", None) or 0
+        conn.commit()
+        return mb_id
+    finally:
+        conn.close()
+
+
+def delete_smtp_mailbox(mb_id: int, user_id: int) -> None:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM smtp_mailboxes WHERE id = ? AND user_id = ?", (mb_id, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_attachment(user_id: int) -> Optional[Tuple[bytes, str, str]]:
     """Return the user's uploaded attachment as (bytes, filename, mime) or None."""
     row = _get_row(user_id)

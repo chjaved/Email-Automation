@@ -327,6 +327,19 @@ CREATE TABLE IF NOT EXISTS user_attachments (
     uploaded_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+CREATE TABLE IF NOT EXISTS smtp_mailboxes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    smtp_user TEXT NOT NULL,
+    smtp_password_enc TEXT,
+    from_alias TEXT,
+    display_name TEXT,
+    daily_cap INTEGER DEFAULT 300,
+    active INTEGER DEFAULT 1,
+    created_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 """
 
 POSTGRES_SCHEMA_STATEMENTS = [
@@ -441,6 +454,19 @@ POSTGRES_SCHEMA_STATEMENTS = [
         mime TEXT,
         data BYTEA NOT NULL,
         uploaded_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS smtp_mailboxes (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        smtp_user TEXT NOT NULL,
+        smtp_password_enc TEXT,
+        from_alias TEXT,
+        display_name TEXT,
+        daily_cap INTEGER DEFAULT 300,
+        active INTEGER DEFAULT 1,
+        created_at TEXT
     )
     """,
 ]

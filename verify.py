@@ -19,6 +19,14 @@ from db import get_conn
 
 logger = logging.getLogger(__name__)
 
+
+def _setup_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler()],
+    )
+
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
 # Explicit typo / non-existent domain blocklist. These never resolve MX but
@@ -78,6 +86,20 @@ def _local_part_is_plausible(local: str, domain: str) -> bool:
     # a real inbox on any consumer provider.
     if not any(c.isalpha() for c in local):
         return False
+
+    # Conservative garbage filter for public providers. Scraped Malaysian
+    # business data is full of short, random local parts like "jamnfg" or
+    # "dondfn" that pass syntax checks but do not exist.
+    if domain in _PROVIDER_MIN_LOCAL_LEN:
+        vowels = set("aeiou")
+        has_vowel = any(c in vowels for c in local)
+        digit_ratio = sum(1 for c in local if c.isdigit()) / len(local)
+        # Random consonant-only strings up to 10 chars are almost never real.
+        if not has_vowel and len(local) <= 10:
+            return False
+        # Local parts that are mostly digits rarely belong to real people.
+        if digit_ratio > 0.5:
+            return False
     return True
 
 
@@ -217,3 +239,21 @@ def verify_user_leads(
         "domains_bad": len(domains_bad),
         "sample_bad_domains": ", ".join(sorted(domains_bad)[:15]),
     }
+
+
+if __name__ == "__main__":
+    import argparse
+
+    _setup_logging()
+    parser = argparse.ArgumentParser(description="Verify lead email addresses")
+    parser.add_argument("--user-id", type=int, default=2, help="User whose leads to verify")
+    parser.add_argument("--workers", type=int, default=20, help="Concurrent DNS lookups")
+    args = parser.parse_args()
+
+    stats = verify_user_leads(args.user_id, workers=args.workers)
+    print(f"Checked:          {stats['checked']}")
+    print(f"Marked invalid:   {stats['invalid']}")
+    print(f"Domains good:     {stats['domains_ok']}")
+    print(f"Domains bad:      {stats['domains_bad']}")
+    if stats.get("sample_bad_domains"):
+        print(f"Sample bad doms:  {stats['sample_bad_domains']}")

@@ -188,7 +188,7 @@ def _get_signature(user_id: int) -> Dict[str, str]:
         }
 
 
-def _signature_html(logo_cid: Optional[str], user_id: int = 0) -> str:
+def _signature_html(logo_cid: Optional[str], user_id: int = 0, regards: str = "Kind regards,") -> str:
     sig = _get_signature(user_id)
     logo_html = (
         f"<img src='cid:{logo_cid}' alt='{html_lib.escape(sig['company'])}' "
@@ -197,7 +197,7 @@ def _signature_html(logo_cid: Optional[str], user_id: int = 0) -> str:
         else ""
     )
     return (
-        "<p style='margin:0 0 4px;'>Kind regards,</p>"
+        f"<p style='margin:0 0 4px;'>{html_lib.escape(regards)}</p>"
         "<p style='margin:0 0 4px;line-height:1.5;'>"
         f"<strong>{html_lib.escape(sig['name'])}</strong><br>"
         f"{html_lib.escape(sig['title'])}<br>"
@@ -215,7 +215,8 @@ def _build_html_body(body: str, user_id: int = 0) -> str:
     parts = [_paragraphs_html(main)]
     if signature:
         logo_cid = "logo" if SIGNATURE_LOGO_PATH.exists() else None
-        parts.append(_signature_html(logo_cid, user_id))
+        regards = "Best regards," if signature.lstrip().startswith("Best regards,") else "Kind regards,"
+        parts.append(_signature_html(logo_cid, user_id, regards))
     footer_text = re.sub(r"^-+\s*", "", footer.strip()) if footer else ""
     if footer_text:
         parts.append(
@@ -282,6 +283,7 @@ def _build_message(
     user_id: int,
     in_reply_to: str = "",
     cc: Optional[List[str]] = None,
+    display_name: str = "",
 ) -> EmailMessage:
     from settings import get_from_display_name, get_cc_enabled
 
@@ -291,7 +293,7 @@ def _build_message(
     in_reply_to = _clean_header(in_reply_to)
     cc = [_clean_header(c) for c in (cc or []) if c]
 
-    display = _clean_header(get_from_display_name(user_id) or FROM_DISPLAY_NAME)
+    display = _clean_header(display_name or get_from_display_name(user_id) or FROM_DISPLAY_NAME)
     msg = EmailMessage()
     msg["From"] = email.utils.formataddr((display, from_addr))
     msg["To"] = to
@@ -412,17 +414,27 @@ def send_test_email(
 # ---------------------------------------------------------------------------
 # Sending via SMTP (user-specific credentials)
 # ---------------------------------------------------------------------------
-def send_message_smtp(lead: sqlite3.Row, user_id: int) -> Optional[Dict[str, str]]:
-    """Build and send one email via the user's own Gmail SMTP credentials."""
+def send_message_smtp(
+    lead: sqlite3.Row,
+    user_id: int,
+    creds: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, str]]:
+    """Build and send one email via the user's own Gmail SMTP credentials.
+
+    `creds` is a mailbox dict from settings.get_active_smtp_mailboxes():
+    {smtp_user, smtp_password, from_alias, display_name, daily_cap}.
+    When omitted, falls back to the legacy single-credential user settings."""
     from settings import get_cc_enabled, get_smtp_user, get_smtp_password, get_from_alias
 
     all_emails = [e.strip() for e in (lead["email"] or "").split() if e.strip()]
     to = all_emails[0] if all_emails else (lead["email"] or "").strip()
     extra_cc = [e for e in all_emails[1:] if _EMAIL_RE.match(e)]
 
-    smtp_user = get_smtp_user(user_id)
-    smtp_password = get_smtp_password(user_id)
-    from_addr = get_from_alias(user_id) or smtp_user
+    creds = creds or {}
+    smtp_user = creds.get("smtp_user") or get_smtp_user(user_id)
+    smtp_password = creds.get("smtp_password") or get_smtp_password(user_id)
+    from_addr = creds.get("from_alias") or get_from_alias(user_id) or smtp_user
+    display_name = creds.get("display_name") or ""
 
     if not to or not _EMAIL_RE.match(to):
         raise InvalidRecipientError(f"Invalid To address: {to!r}")
@@ -439,7 +451,10 @@ def send_message_smtp(lead: sqlite3.Row, user_id: int) -> Optional[Dict[str, str
     raw_cc = (DEFAULT_CC_EMAILS if get_cc_enabled(user_id) else []) + extra_cc
     cc_list = [c for c in raw_cc if c and _EMAIL_RE.match(c)]
     in_reply_to = lead["gmail_message_id_header"] or ""
-    msg = _build_message(to, from_addr, subject, body, user_id, in_reply_to=in_reply_to, cc=cc_list)
+    msg = _build_message(
+        to, from_addr, subject, body, user_id,
+        in_reply_to=in_reply_to, cc=cc_list, display_name=display_name,
+    )
 
     import smtplib
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:

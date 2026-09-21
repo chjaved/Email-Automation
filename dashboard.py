@@ -382,40 +382,48 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
             "sent_today": row["sent_today"],
         }
 
-    # Determine whether this user sends via their own SMTP credentials or
-    # via the shared Gmail-API mailbox pool. Users with SMTP credentials get
-    # a single "mailbox" entry reflecting their own Gmail account + alias.
+    # Determine whether this user sends via their own SMTP mailbox pool or
+    # via the shared Gmail-API mailbox pool. Each configured SMTP mailbox gets
+    # its own entry with an independent daily cap.
+    from settings import get_active_smtp_mailboxes
+
+    smtp_mbs = get_active_smtp_mailboxes(user_id)
     smtp_user = get_smtp_user(user_id) or ""
     smtp_pass = get_smtp_password(user_id) or ""
-    from_alias = get_from_alias(user_id) or ""
-    display_name = get_from_display_name(user_id) or ""
-    uses_smtp = bool(smtp_user and smtp_pass)
+    uses_smtp = bool(smtp_mbs) or bool(smtp_user and smtp_pass)
 
     if uses_smtp:
-        smtp_name = "smtp"
-        smtp_address = from_alias or smtp_user
-        smtp_sent_today = stats_by_mailbox.get(smtp_name, {}).get("sent_today", 0)
-        smtp_total_sent = stats_by_mailbox.get(smtp_name, {}).get("total_sent", 0)
-        smtp_cap_today = get_daily_send_cap(user_id)
-        if smtp_cap_today == 0:
-            color = "red"
-        else:
-            pct = smtp_sent_today / smtp_cap_today
-            color = "green" if pct < 0.8 else ("orange" if pct < 1.0 else "red")
-        mailbox_stats = [
-            {
-                "name": smtp_name,
-                "address": smtp_address,
-                "sent_today": smtp_sent_today,
-                "total_sent": smtp_total_sent,
-                "cap_today": smtp_cap_today,
-                "active": True,
-                "color": color,
-            }
-        ]
-        mailbox_caps = [
-            {"name": smtp_name, "address": smtp_address, "cap_today": smtp_cap_today, "active": True}
-        ]
+        mailbox_stats = []
+        mailbox_caps = []
+        for mb in smtp_mbs:
+            name = mb["smtp_user"]
+            sent_today = stats_by_mailbox.get(name, {}).get("sent_today", 0)
+            total_sent = stats_by_mailbox.get(name, {}).get("total_sent", 0)
+            # Legacy events were logged under the generic "smtp" bucket by the
+            # mailbox that matches the user's legacy smtp_user setting.
+            if name == smtp_user:
+                sent_today += stats_by_mailbox.get("smtp", {}).get("sent_today", 0)
+                total_sent += stats_by_mailbox.get("smtp", {}).get("total_sent", 0)
+            cap_today = mb.get("daily_cap", 300)
+            if cap_today == 0 or not mb["active"]:
+                color = "red"
+            else:
+                pct = sent_today / cap_today
+                color = "green" if pct < 0.8 else ("orange" if pct < 1.0 else "red")
+            mailbox_stats.append(
+                {
+                    "name": name,
+                    "address": mb.get("from_alias") or name,
+                    "sent_today": sent_today,
+                    "total_sent": total_sent,
+                    "cap_today": cap_today,
+                    "active": mb["active"],
+                    "color": color,
+                }
+            )
+            mailbox_caps.append(
+                {"name": name, "address": mb.get("from_alias") or name, "cap_today": cap_today, "active": mb["active"]}
+            )
     else:
         mailbox_stats = []
         for m in MAILBOX_POOL:

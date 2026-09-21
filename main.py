@@ -13,7 +13,7 @@ from enricher import run_enrichment
 from generator import preview_emails
 from leads import ingest_csv
 from mailboxes import get_credentials
-from sender import reset_pause, run_sender_loop, send_test_email
+from sender import pause_campaign, reset_pause, run_sender_loop, send_test_email
 
 
 logger = logging.getLogger(__name__)
@@ -129,6 +129,11 @@ def cmd_stats(args: argparse.Namespace) -> None:
 def cmd_reset_pause(args: argparse.Namespace) -> None:
     reset_pause()
     print("Campaign pause reset.")
+
+
+def cmd_pause_campaign(args: argparse.Namespace) -> None:
+    pause_campaign(args.user_id, args.reason)
+    print(f"Campaign paused for user {args.user_id}.")
 
 
 def _existing_tables(conn) -> set:
@@ -292,6 +297,11 @@ def main(argv: list = None) -> int:
 
     p_reset = sub.add_parser("reset-pause", help="Resume a paused campaign")
     p_reset.set_defaults(func=cmd_reset_pause)
+
+    p_pause = sub.add_parser("pause-campaign", help="Pause a campaign immediately")
+    p_pause.add_argument("--user-id", type=int, default=2, help="User whose campaign to pause")
+    p_pause.add_argument("--reason", type=str, default="manual pause", help="Reason for pause")
+    p_pause.set_defaults(func=cmd_pause_campaign)
 
     p_clean = sub.add_parser("clean-bounced", help="Delete all leads that already bounced")
     p_clean.add_argument("--user-id", type=int, default=2, help="User whose bounced leads to clean")

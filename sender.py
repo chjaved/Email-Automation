@@ -167,16 +167,21 @@ def check_bounce_rate_safety(user_id: int) -> bool:
 # ---------------------------------------------------------------------------
 # IMAP bounce/reply detection
 # ---------------------------------------------------------------------------
-def _fetch_recent_inbox_messages(user_id: int, days: int = 7) -> List[Dict[str, Any]]:
+def _fetch_recent_inbox_messages(
+    user_id: int,
+    days: int = 7,
+    smtp_user: str = "",
+    smtp_password: str = "",
+) -> List[Dict[str, Any]]:
     """Return a list of {"from": str, "subject": str, "body": str} dicts from
-    the last `days` days. Uses IMAP with the same SMTP credentials.
-    Returns an empty list on any failure (bounce detection is best-effort)."""
+    the last `days` days. Uses IMAP with the given (or user's default) SMTP
+    credentials. Returns an empty list on any failure (best-effort)."""
     import imaplib
     import email as email_mod
 
     try:
         imap = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
-        imap.login(get_smtp_user(user_id), get_smtp_password(user_id))
+        imap.login(smtp_user or get_smtp_user(user_id), smtp_password or get_smtp_password(user_id))
         imap.select("INBOX", readonly=True)
         since_date = (datetime.now() - _timedelta(days=days)).strftime("%d-%b-%Y")
         typ, data = imap.search(None, f'(SINCE "{since_date}")')
@@ -258,9 +263,16 @@ def _extract_bounce_reason(body: str) -> str:
     return "Unknown bounce reason"
 
 
-def detect_bounces_and_replies(user_id: int, from_email: str) -> None:
+def detect_bounces_and_replies(
+    user_id: int,
+    from_email: str,
+    smtp_user: str = "",
+    smtp_password: str = "",
+) -> None:
     """Very lightweight inbox scan: mark leads as bounced/replied/unsubscribed."""
-    messages = _fetch_recent_inbox_messages(user_id, days=7)
+    messages = _fetch_recent_inbox_messages(
+        user_id, days=7, smtp_user=smtp_user, smtp_password=smtp_password
+    )
     if not messages:
         return
 
@@ -275,6 +287,10 @@ def detect_bounces_and_replies(user_id: int, from_email: str) -> None:
     conn.close()
 
     from_email_lower = from_email.lower()
+    skip_addrs = {from_email_lower}
+    own_smtp = (smtp_user or get_smtp_user(user_id) or "").lower()
+    if own_smtp:
+        skip_addrs.add(own_smtp)
     for m in messages:
         sender = m["from"]
         if "mailer-daemon" in sender or "postmaster" in sender:
@@ -286,7 +302,7 @@ def detect_bounces_and_replies(user_id: int, from_email: str) -> None:
             )
             reason = _extract_bounce_reason(m["body"])
             for addr in found:
-                if addr.lower() == from_email_lower or addr.lower() == get_smtp_user(user_id).lower():
+                if addr.lower() in skip_addrs:
                     continue
                 lead_id = sent_leads.get(addr.lower())
                 if lead_id:
@@ -428,8 +444,37 @@ def _pick_ready_mailbox(
         time.sleep(wait)
 
 
+def _smtp_sends_today(conn, smtp_user: str, legacy_smtp_user: str = "") -> int:
+    """Sends logged today for one SMTP mailbox. The generic legacy 'smtp'
+    bucket (events written before per-mailbox tracking) is attributed to the
+    mailbox matching the user's legacy smtp_user setting — that's the account
+    that actually sent those."""
+    from mailboxes import _sends_today
+
+    n = _sends_today(conn, smtp_user)
+    if legacy_smtp_user and smtp_user == legacy_smtp_user:
+        n += _sends_today(conn, "smtp")
+    return n
+
+
+def _pick_smtp_mailbox(
+    smtp_mbs: List[Dict[str, Any]], sent_today: Dict[str, int]
+) -> Optional[Dict[str, Any]]:
+    """Return the active SMTP mailbox with the fewest sends today that is
+    still under its own daily cap. Returns None when all are at cap.
+    Picking the least-used mailbox naturally spreads volume across the pool
+    and honours each mailbox's independent cap (e.g. 100 vs 300)."""
+    under_cap = [
+        m for m in smtp_mbs if sent_today.get(m["smtp_user"], 0) < m.get("daily_cap", 300)
+    ]
+    if not under_cap:
+        return None
+    under_cap.sort(key=lambda m: sent_today.get(m["smtp_user"], 0))
+    return under_cap[0]
+
+
 def send_due(user_id: int) -> int:
-    from settings import get_send_gap_min, get_send_gap_max, get_smtp_user, get_smtp_password, get_daily_send_cap
+    from settings import get_send_gap_min, get_send_gap_max, get_smtp_user, get_active_smtp_mailboxes
 
     due = _due_leads(user_id)
     if not due:
@@ -438,11 +483,11 @@ def send_due(user_id: int) -> int:
     gap_min = get_send_gap_min(user_id)
     gap_max = get_send_gap_max(user_id)
 
-    # Decide send path: per-user SMTP (e.g. info@onlinejobs.my) when configured,
-    # otherwise fall back to the shared Gmail-API mailbox pool.
-    smtp_user = get_smtp_user(user_id)
-    smtp_password = get_smtp_password(user_id)
-    use_smtp = bool(smtp_user and smtp_password)
+    # Decide send path: per-user SMTP mailbox pool (e.g. recruitment@ +
+    # info@onlinejobs.my) when configured, otherwise the shared Gmail-API pool.
+    smtp_mbs = get_active_smtp_mailboxes(user_id)
+    use_smtp = bool(smtp_mbs)
+    legacy_smtp_user = get_smtp_user(user_id)
 
     # Per-mailbox cooldown clocks (monotonic seconds). A mailbox is ready when
     # its ready_at <= now. This means N mailboxes throughput ≈ N × 1/gap,
@@ -455,15 +500,14 @@ def send_due(user_id: int) -> int:
     cur = conn.cursor()
     sent_count = 0
 
-    # For SMTP path, enforce the user's own daily_send_cap by counting sends today.
-    smtp_sent_today = 0
+    # Per-SMTP-mailbox sends today, seeded from the events log so a worker
+    # restart mid-day doesn't reset the caps.
+    smtp_sent_today: Dict[str, int] = {}
     if use_smtp:
-        today_iso = datetime.now(ZoneInfo(TIMEZONE)).date().isoformat()
-        cur.execute(
-            "SELECT COUNT(*) AS n FROM leads WHERE user_id = ? AND sent_at IS NOT NULL AND substr(sent_at, 1, 10) = ?",
-            (user_id, today_iso),
-        )
-        smtp_sent_today = cur.fetchone()["n"]
+        for m in smtp_mbs:
+            smtp_sent_today[m["smtp_user"]] = _smtp_sends_today(
+                conn, m["smtp_user"], legacy_smtp_user
+            )
 
     for lead in due:
         if is_paused(user_id):
@@ -492,10 +536,12 @@ def send_due(user_id: int) -> int:
         if not check_bounce_rate_safety(user_id):
             break
 
+        smtp_mb = None
         mailbox = None
         if use_smtp:
-            if smtp_sent_today >= get_daily_send_cap(user_id):
-                logger.info("SMTP daily cap reached for user %s. Stopping.", user_id)
+            smtp_mb = _pick_smtp_mailbox(smtp_mbs, smtp_sent_today)
+            if smtp_mb is None:
+                logger.info("All SMTP mailboxes at daily cap for user %s. Stopping.", user_id)
                 break
         else:
             mailbox = _pick_ready_mailbox(conn, ready_at, gap_min, gap_max)
@@ -503,13 +549,15 @@ def send_due(user_id: int) -> int:
                 logger.info("All mailboxes at daily cap. Stopping.")
                 break
 
+        mb_name = smtp_mb["smtp_user"] if smtp_mb else mailbox["name"]
+
         step = lead["sequence_step"] or 0
         in_reply_to = lead["gmail_message_id_header"] or ""
         thread_id = lead["gmail_thread_id"] or ""
 
         try:
             if use_smtp:
-                result = _send_smtp_message(lead, user_id)
+                result = _send_smtp_message(lead, user_id, smtp_mb)
             else:
                 result = _send_mailbox_message(lead, mailbox)
             if result:
@@ -517,13 +565,13 @@ def send_due(user_id: int) -> int:
                 next_step = step + 1
 
                 if step == 0:
-                    log_event(lead["id"], "sent", mailbox=mailbox["name"] if mailbox else "smtp")
+                    log_event(lead["id"], "sent", mailbox=mb_name)
                 else:
                     log_event(
                         lead["id"],
                         f"followup_{step}",
                         f"Step {step} follow-up",
-                        mailbox=mailbox["name"] if mailbox else "smtp",
+                        mailbox=mb_name,
                     )
 
                 if step == len(FOLLOWUP_SCHEDULE):
@@ -542,17 +590,17 @@ def send_due(user_id: int) -> int:
                     gmail_thread_id=result["thread_id"],
                     gmail_message_id_header=result.get("message_id_header", ""),
                     scheduled_at=None,
-                    sent_from_mailbox=mailbox["name"] if mailbox else "smtp",
+                    sent_from_mailbox=mb_name,
                 )
                 sent_count += 1
                 if use_smtp:
-                    smtp_sent_today += 1
+                    smtp_sent_today[mb_name] = smtp_sent_today.get(mb_name, 0) + 1
                 logger.info(
                     "Marked lead %s as %s (step %d) via %s",
                     lead["id"],
                     new_status,
                     step,
-                    mailbox["name"] if mailbox else "smtp",
+                    mb_name,
                 )
         except Exception as e:
             reason = _classify_send_failure(e)
@@ -564,9 +612,9 @@ def send_due(user_id: int) -> int:
                         "bounced",
                         bounce_reason=reason,
                         sent_at=now,
-                        sent_from_mailbox=mailbox["name"] if mailbox else "smtp",
+                        sent_from_mailbox=mb_name,
                     )
-                    log_event(lead["id"], "bounced", reason, mailbox=mailbox["name"] if mailbox else "smtp")
+                    log_event(lead["id"], "bounced", reason, mailbox=mb_name)
                     logger.warning(
                         "Marked lead %s as bounced (invalid recipient): %s",
                         lead["id"], reason,
@@ -631,8 +679,28 @@ def _should_check_inbox(user_id: int) -> bool:
         return True
 
 
-def _check_inbox(user_id: int, from_email: str) -> None:
-    detect_bounces_and_replies(user_id, from_email)
+def _check_inbox(user_id: int) -> None:
+    """Scan every active SMTP mailbox (IMAP) plus the Gmail-API pool for
+    bounces/replies."""
+    from settings import get_active_smtp_mailboxes
+
+    mbs = get_active_smtp_mailboxes(user_id)
+    if mbs:
+        for mb in mbs:
+            try:
+                detect_bounces_and_replies(
+                    user_id,
+                    mb.get("from_alias") or mb["smtp_user"],
+                    smtp_user=mb["smtp_user"],
+                    smtp_password=mb["smtp_password"],
+                )
+            except Exception:
+                logger.exception("Inbox scan failed for %s", mb["smtp_user"])
+    else:
+        active = [m for m in MAILBOX_POOL if m["active"]]
+        from_email = active[0]["address"] if active else None
+        if from_email:
+            detect_bounces_and_replies(user_id, from_email)
     try:
         detect_bounces_gmail_api(user_id)
     except Exception:
@@ -922,13 +990,7 @@ def _run_cycle_for_user(user_id: int) -> bool:
 
     if inbox_due:
         try:
-            from_email = get_smtp_user(user_id)
-            if not from_email:
-                active = [m for m in MAILBOX_POOL if m["active"]]
-                from_email = active[0]["address"] if active else None
-            if not from_email:
-                raise RuntimeError("No active mailbox or SMTP user available for inbox check")
-            _check_inbox(user_id, from_email)
+            _check_inbox(user_id)
         except Exception as e:
             logger.warning("Inbox check failed for user %s: %s", user_id, e)
 
@@ -997,9 +1059,11 @@ def send_lead_now(lead_id: int, user_id: int) -> Dict[str, Any]:
         log_event(lead_id, "invalid", "Address failed pre-send verification")
         raise ValueError(f"Lead {lead_id} email failed verification: {lead['email']}")
 
-    from settings import get_smtp_user, get_smtp_password
+    from settings import get_active_smtp_mailboxes
 
-    use_smtp = bool(get_smtp_user(user_id) and get_smtp_password(user_id))
+    smtp_mbs = get_active_smtp_mailboxes(user_id)
+    use_smtp = bool(smtp_mbs)
+    smtp_mb = smtp_mbs[0] if smtp_mbs else None
     mailbox = None
     if not use_smtp:
         conn = get_conn()
@@ -1015,14 +1079,14 @@ def send_lead_now(lead_id: int, user_id: int) -> Dict[str, Any]:
     thread_id = lead["gmail_thread_id"] or ""
 
     result = (
-        _send_smtp_message(lead, user_id)
+        _send_smtp_message(lead, user_id, smtp_mb)
         if use_smtp
         else _send_mailbox_message(lead, mailbox)
     )
     if not result:
         raise RuntimeError("Send failed for unknown reason")
 
-    mailbox_name = mailbox["name"] if mailbox else "smtp"
+    mailbox_name = smtp_mb["smtp_user"] if smtp_mb else mailbox["name"]
     now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
     next_step = step + 1
 
@@ -1063,11 +1127,13 @@ def send_lead_now(lead_id: int, user_id: int) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # SMTP send helper (per-user SMTP credentials)
 # ---------------------------------------------------------------------------
-def _send_smtp_message(lead: sqlite3.Row, user_id: int) -> Optional[Dict[str, str]]:
+def _send_smtp_message(
+    lead: sqlite3.Row, user_id: int, creds: Optional[Dict[str, Any]] = None
+) -> Optional[Dict[str, str]]:
     """Wrapper around mailboxes.send_message_smtp so sender.py can use the
     same send + update flow as the Gmail-API mailbox path."""
     from mailboxes import send_message_smtp
-    return send_message_smtp(lead, user_id)
+    return send_message_smtp(lead, user_id, creds)
 
 
 # ---------------------------------------------------------------------------
