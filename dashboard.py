@@ -452,7 +452,20 @@ def _api_data_impl(conn, industry: Optional[str], start: Optional[str], end: Opt
             for m in MAILBOX_POOL
         ]
 
-    overall_bounce_rate = (bounces / sent * 100) if sent > 0 else 0.0
+    # Overall bounce rate over actual send attempts (events), so leads that
+    # were reset or had sent_at cleared don't skew the ratio.
+    cur.execute(
+        """
+        SELECT e.event_type, COUNT(*) AS n
+        FROM events e JOIN leads l ON e.lead_id = l.id
+        WHERE l.user_id = ? AND e.event_type IN ('sent', 'bounced')
+        GROUP BY e.event_type
+        """,
+        (user_id,),
+    )
+    ev = {row["event_type"]: row["n"] for row in cur.fetchall()}
+    attempts = ev.get("sent", 0) + ev.get("bounced", 0)
+    overall_bounce_rate = (ev.get("bounced", 0) / attempts * 100) if attempts > 0 else 0.0
     return {
         "stats": {
             "total": total,
