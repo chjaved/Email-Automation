@@ -701,10 +701,13 @@ def _check_inbox(user_id: int) -> None:
         from_email = active[0]["address"] if active else None
         if from_email:
             detect_bounces_and_replies(user_id, from_email)
-    try:
-        detect_bounces_gmail_api(user_id)
-    except Exception:
-        logger.exception("Gmail bounce scan failed for user %s", user_id)
+        # Gmail-API scan only makes sense when the user actually sends via
+        # the shared pool — for SMTP users the pool's OAuth flow can block
+        # the whole daemon forever on expired tokens.
+        try:
+            detect_bounces_gmail_api(user_id)
+        except Exception:
+            logger.exception("Gmail bounce scan failed for user %s", user_id)
     _set_state(_state_key(user_id, "last_inbox_check"), datetime.now(ZoneInfo(TIMEZONE)).isoformat())
 
 

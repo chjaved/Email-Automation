@@ -259,7 +259,7 @@ def cmd_auth_mailboxes(args: argparse.Namespace) -> None:
             continue
         print(f"Authenticating {mailbox['name']} ({mailbox['address']})...")
         try:
-            get_credentials(mailbox)
+            get_credentials(mailbox, interactive=True)
             print(f"  OK - token saved to {mailbox['token']}")
         except Exception as e:
             print(f"  FAILED: {e}", file=sys.stderr)

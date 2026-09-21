@@ -38,11 +38,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # OAuth credentials
 # ---------------------------------------------------------------------------
-def get_credentials(mailbox: Dict[str, Any]):
+def get_credentials(mailbox: Dict[str, Any], interactive: bool = False):
     """Load OAuth credentials for a specific mailbox, refreshing the token
     if needed. Accepts token/credentials from a local file or from env vars
     (MAILBOX_<NAME>_TOKEN and MAILBOX_<NAME>_CREDENTIALS) so production can
-    use them without committing secrets to git."""
+    use them without committing secrets to git.
+
+    interactive=False (default for daemons): raises instead of launching a
+    local-server OAuth flow — a headless worker must never block waiting
+    for a browser login that will never happen."""
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -83,6 +87,12 @@ def get_credentials(mailbox: Dict[str, Any]):
                         f"No credentials or token for mailbox '{name}'. "
                         f"Set MAILBOX_{name.upper()}_TOKEN (or run auth-mailboxes locally and copy the token file)."
                     )
+            if not interactive:
+                raise RuntimeError(
+                    f"Mailbox '{name}' token expired/missing and interactive "
+                    "OAuth is disabled on this process (headless worker). "
+                    "Refresh MAILBOX_<NAME>_TOKEN locally with auth-mailboxes."
+                )
             if isinstance(client_secrets, dict):
                 flow = InstalledAppFlow.from_client_config(client_secrets, GMAIL_SCOPES)
             else:
