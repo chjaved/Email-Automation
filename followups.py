@@ -11,10 +11,13 @@ from openai import OpenAI
 from config import (
     OPENAI_API_KEY,
     OPENAI_MODEL,
+    SIGNATURE_ADDRESS,
     SIGNATURE_COMPANY,
+    SIGNATURE_CONFIDENTIALITY,
     SIGNATURE_EMAIL,
     SIGNATURE_NAME,
     SIGNATURE_PHONE,
+    SIGNATURE_SERVICES,
     SIGNATURE_TITLE,
     SIGNATURE_WEBSITE,
     TIMEZONE,
@@ -29,9 +32,51 @@ if OPENAI_API_KEY:
 
 
 STEP_NAMES = {
-    1: "Follow-up 1 (3-day bump)",
-    2: "Follow-up 2 (7-day AI interview software angle)",
-    3: "Follow-up 3 (14-day breakup)",
+    1: "Follow-up 1 (A Quick Follow-Up)",
+    2: "Follow-up 2 (Just a Final Note)",
+    3: "Follow-up 3 (extra final note)",
+}
+
+# Approved follow-up templates (sent verbatim).
+FOLLOWUP_SUBJECTS = {
+    1: "A Quick Follow-Up",
+    2: "Just a Final Note",
+    3: "Just a Final Note",
+}
+
+FOLLOWUP_BODIES = {
+    1: (
+        "Hi,\n\n"
+        "I just wanted to follow up on my previous email in case it got lost or overlooked.\n\n"
+        "I work with sole traders and small to medium-sized businesses across Ireland, providing "
+        "reliable bookkeeping, VAT, PAYE, and payroll support — all delivered remotely and "
+        "tailored to transaction volume and employee numbers.\n\n"
+        "If you'd like any further information or have any questions, feel free to reply to this "
+        "email and I'll be happy to help. There's absolutely no obligation.\n\n"
+        "You can also find more details about my services at www.atlasprobookkeeping.ie."
+    ),
+    2: (
+        "Hi,\n\n"
+        "I just wanted to send a quick final note in case my previous emails got buried.\n\n"
+        "I work with sole traders and small to medium-sized businesses across Ireland, providing "
+        "reliable bookkeeping, VAT, PAYE, and payroll support — all delivered remotely, with "
+        "packages starting from €95 and including the full range of services.\n\n"
+        "If this would be helpful for your business, feel free to reply to this email anytime — "
+        "there's absolutely no obligation.\n\n"
+        "You can also find more details about my services at www.atlasprobookkeeping.ie.\n\n"
+        "Wishing you every success,"
+    ),
+    3: (
+        "Hi,\n\n"
+        "I just wanted to send a quick final note in case my previous emails got buried.\n\n"
+        "I work with sole traders and small to medium-sized businesses across Ireland, providing "
+        "reliable bookkeeping, VAT, PAYE, and payroll support — all delivered remotely, with "
+        "packages starting from €95 and including the full range of services.\n\n"
+        "If this would be helpful for your business, feel free to reply to this email anytime — "
+        "there's absolutely no obligation.\n\n"
+        "You can also find more details about my services at www.atlasprobookkeeping.ie.\n\n"
+        "Wishing you every success,"
+    ),
 }
 
 
@@ -111,15 +156,11 @@ def _signature(lead: sqlite3.Row = None) -> str:
                 sig = get_signature(user_id)
             except Exception:
                 pass
+    from generator import _signature_lines
     return (
-        "\n\nKind regards,\n\n"
-        f"{sig['name']}\n"
-        f"{sig['title']}\n"
-        f"{sig['company']}\n"
-        f"Email: {sig['email']}\n"
-        f"Phone: {sig['phone']}\n"
-        f"Website: {sig['website']}\n\n"
-        "---\n"
+        "\n\n"
+        + _signature_lines(sig)
+        + "\n\n---\n"
         "Reply 'remove' if this isn't relevant and we won't email you again."
     )
 
@@ -182,75 +223,14 @@ def _sample_block(lead: sqlite3.Row) -> str:
     return "\n".join(parts) + "\n" if parts else ""
 
 
-def _generate_step1(lead: sqlite3.Row) -> str:
-    company = lead["company_name"] or "your company"
-    industry = lead["industry"] or "other"
-    original = _get_original_email(lead)
-    subject = original.get("subject", "")
-    body = original.get("body", "")
-
-    prompt = (
-        f"{_account_brief_block(lead)}"
-        f"{_sample_block(lead)}"
-        f"Write a very short, polite follow-up bump for {company} (industry: {industry}).\n"
-        f"Original subject: {subject}\n"
-        f"Original email angle: {body[:600]}\n\n"
-        "Rules:\n"
-        "- Only 2-3 short lines.\n"
-        "- Reference the original topic without repeating the full pitch.\n"
-        "- No long paragraphs, no all-caps, no words like 'free', 'guaranteed', or 'urgent'.\n"
-        "- End with a soft question.\n"
-        "Return only the body text."
-    )
-    return _call_openai(prompt, temperature=0.7).strip() + _signature(lead)
+def _generate_step(lead: sqlite3.Row, step: int) -> str:
+    """Return the approved follow-up template for `step` plus signature."""
+    return FOLLOWUP_BODIES[step] + _signature(lead)
 
 
-def _generate_step2(lead: sqlite3.Row) -> str:
-    company = lead["company_name"] or "your company"
-    industry = lead["industry"] or "other"
-    enriched = lead["enriched_data"] or ""
-
-    prompt = (
-        f"{_account_brief_block(lead)}"
-        f"{_sample_block(lead)}"
-        f"Write a short follow-up email for {company} (industry: {industry}).\n"
-        f"Company context: {enriched[:600]}\n\n"
-        "This follow-up should introduce a NEW value angle from the sender "
-        "account brief above (if provided) — do NOT repeat the pitch from the "
-        "first email. If no brief was provided, introduce our AI interview "
-        "software as the new angle.\n\n"
-        "Rules:\n"
-        "- 3-5 short paragraphs max.\n"
-        "- One clear value point.\n"
-        "- Soft call to action: 15-minute call or WhatsApp reply.\n"
-        "- No all-caps, no words like 'free', 'guaranteed', or 'urgent'.\n"
-        "Return only the body text."
-    )
-    body = _call_openai(prompt, temperature=0.8).strip()
-    return body + _signature(lead)
-
-
-def _generate_step3(lead: sqlite3.Row) -> str:
-    company = lead["company_name"] or "your company"
-    try:
-        user_id = lead["user_id"]
-    except (KeyError, IndexError):
-        user_id = None
-    sig_company = SIGNATURE_COMPANY
-    if user_id:
-        try:
-            from settings import get_sig_company
-            sig_company = get_sig_company(user_id)
-        except Exception:
-            pass
-    body = (
-        f"Hi {company} team,\n\n"
-        "I completely understand if the timing isn't right. "
-        "I'll close the file for now, but feel free to reply anytime if you'd like to explore how "
-        f"{sig_company} can help.\n\n"
-        "All the best,"
-    )
-    return body + _signature(lead)
+def get_followup_subject(step: int, original_subject: str = "") -> str:
+    """Subject line for a follow-up step."""
+    return FOLLOWUP_SUBJECTS.get(step, "A Quick Follow-Up")
 
 
 def get_followup_body(lead: sqlite3.Row, step: int) -> str:
@@ -261,12 +241,7 @@ def get_followup_body(lead: sqlite3.Row, step: int) -> str:
     if cached:
         return cached
 
-    if step == 1:
-        body = _generate_step1(lead)
-    elif step == 2:
-        body = _generate_step2(lead)
-    else:
-        body = _generate_step3(lead)
+    body = _generate_step(lead, step)
 
     body = re.sub(r"\n{3,}", "\n\n", body).strip()
     _save_followup(lead["id"], step, body)

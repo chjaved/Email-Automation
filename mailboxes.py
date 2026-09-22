@@ -19,11 +19,15 @@ from config import (
     FROM_DISPLAY_NAME,
     GMAIL_SCOPES,
     MAILBOX_POOL,
+    SIGNATURE_ADDRESS,
     SIGNATURE_COMPANY,
+    SIGNATURE_CONFIDENTIALITY,
     SIGNATURE_EMAIL,
+    SIGNATURE_LINKEDIN,
     SIGNATURE_LOGO_PATH,
     SIGNATURE_NAME,
     SIGNATURE_PHONE,
+    SIGNATURE_SERVICES,
     SIGNATURE_TITLE,
     SIGNATURE_WEBSITE,
     WARMUP_RAMP,
@@ -165,7 +169,7 @@ def get_next_mailbox(conn=None) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Message building (mirrors sender.py helpers but lives here to avoid cycles)
 # ---------------------------------------------------------------------------
-_SIGNATURE_BLOCK_RE = re.compile(r"\n\n((?:Kind|Best) regards,\n\n.*?)(\n\n-+\n.*)?$", re.DOTALL)
+_SIGNATURE_BLOCK_RE = re.compile(r"\n\n((?:Kind|Best) [Rr]egards,\n\n.*?)(\n\n-+\n.*)?$", re.DOTALL)
 
 
 def _split_signature(body: str) -> tuple:
@@ -198,25 +202,95 @@ def _get_signature(user_id: int) -> Dict[str, str]:
         }
 
 
+_SIG_NAVY = "#1a3a5c"
+_SIG_ORANGE = "#e8930c"
+
+
+def _sig_icon(letter: str) -> str:
+    """Small coloured square 'icon' used before each contact line."""
+    return (
+        "<span style='display:inline-block;width:15px;height:15px;"
+        f"background:{_SIG_NAVY};color:#ffffff;font-size:10px;font-weight:bold;"
+        "line-height:15px;text-align:center;border-radius:2px;"
+        "margin-right:7px;vertical-align:middle;'>"
+        f"{letter}</span>"
+    )
+
+
 def _signature_html(logo_cid: Optional[str], user_id: int = 0, regards: str = "Kind regards,") -> str:
     sig = _get_signature(user_id)
-    logo_html = (
-        f"<img src='cid:{logo_cid}' alt='{html_lib.escape(sig['company'])}' "
-        f"style='max-width:200px;margin-top:10px;display:block;'>"
-        if logo_cid
+    website_display = re.sub(r"^https?://", "", sig["website"]).rstrip("/")
+    website_url = sig["website"]
+    if website_url and not re.match(r"^https?://", website_url, re.IGNORECASE):
+        website_url = "https://" + website_url
+
+    if logo_cid:
+        brand_html = (
+            f"<img src='cid:{logo_cid}' alt='{html_lib.escape(sig['company'])}' "
+            "style='width:72px;height:72px;border-radius:50%;display:block;'>"
+        )
+    else:
+        first_word = (sig["company"].split() or ["A"])[0].upper()
+        brand_html = (
+            "<div style='width:72px;height:72px;border-radius:50%;"
+            f"background:{_SIG_NAVY};color:{_SIG_ORANGE};font-weight:bold;"
+            "font-size:12px;line-height:72px;text-align:center;letter-spacing:1px;"
+            "font-family:Arial,Helvetica,sans-serif;'>"
+            f"{html_lib.escape(first_word)}</div>"
+        )
+
+    title_html = (
+        f"<div style='font-size:12px;color:#555;'>{html_lib.escape(sig['title'])}</div>"
+        if sig["title"]
         else ""
     )
+    phone_line = (
+        f"{_sig_icon('P')}<a href='tel:{html_lib.escape(sig['phone'])}' "
+        f"style='color:{_SIG_NAVY};text-decoration:none;'>{html_lib.escape(sig['phone'])}</a><br>"
+        if sig["phone"]
+        else ""
+    )
+    linkedin_line = (
+        f"{_sig_icon('L')}<a href='{html_lib.escape(SIGNATURE_LINKEDIN)}' "
+        f"style='color:{_SIG_NAVY};text-decoration:none;'>LinkedIn Profile</a><br>"
+        if SIGNATURE_LINKEDIN
+        else ""
+    )
+
     return (
-        f"<p style='margin:0 0 4px;'>{html_lib.escape(regards)}</p>"
-        "<p style='margin:0 0 4px;line-height:1.5;'>"
-        f"<strong>{html_lib.escape(sig['name'])}</strong><br>"
-        f"{html_lib.escape(sig['title'])}<br>"
-        f"{html_lib.escape(sig['company'])}<br>"
-        f"Email: <a href='mailto:{sig['email']}'>{html_lib.escape(sig['email'])}</a><br>"
-        f"Phone: {html_lib.escape(sig['phone'])}<br>"
-        f"Website: <a href='{sig['website']}'>{html_lib.escape(sig['website'])}</a>"
+        f"<p style='margin:0 0 6px;'>{html_lib.escape(regards)}</p>"
+        "<table role='presentation' cellpadding='0' cellspacing='0' border='0' width='260'>"
+        f"<tr><td style='border-top:3px solid {_SIG_NAVY};font-size:1px;line-height:1px;'>&nbsp;</td></tr>"
+        "</table>"
+        "<table role='presentation' cellpadding='0' cellspacing='0' border='0' style='margin:8px 0 6px;'>"
+        "<tr>"
+        f"<td style='vertical-align:middle;'>{brand_html}</td>"
+        "<td style='vertical-align:middle;padding-left:14px;'>"
+        f"<div style='font-size:16px;font-weight:bold;color:{_SIG_NAVY};'>{html_lib.escape(sig['name'])}</div>"
+        f"{title_html}"
+        f"<div style='font-size:13px;color:{_SIG_ORANGE};font-weight:bold;'>{html_lib.escape(sig['company'])}</div>"
+        "</td>"
+        "</tr>"
+        "</table>"
+        "<table role='presentation' cellpadding='0' cellspacing='0' border='0' width='260'>"
+        f"<tr><td style='border-top:3px solid {_SIG_ORANGE};font-size:1px;line-height:1px;'>&nbsp;</td></tr>"
+        "</table>"
+        "<p style='margin:8px 0 10px;line-height:1.9;font-size:13px;'>"
+        f"{_sig_icon('E')}<a href='mailto:{html_lib.escape(sig['email'])}' "
+        f"style='color:{_SIG_NAVY};text-decoration:none;'>{html_lib.escape(sig['email'])}</a><br>"
+        f"{_sig_icon('W')}<a href='{html_lib.escape(website_url)}' "
+        f"style='color:{_SIG_NAVY};text-decoration:none;'>{html_lib.escape(website_display)}</a><br>"
+        f"{linkedin_line}"
+        f"{_sig_icon('A')}<span style='color:{_SIG_NAVY};'>{html_lib.escape(SIGNATURE_ADDRESS)}</span><br>"
+        f"{phone_line}"
         "</p>"
-        f"{logo_html}"
+        "<div style='margin:4px 0 10px;'>"
+        f"<span style='background:{_SIG_ORANGE};color:#ffffff;padding:5px 12px;"
+        "font-size:12px;font-weight:bold;display:inline-block;'>"
+        f"{html_lib.escape(SIGNATURE_SERVICES)}</span>"
+        "</div>"
+        "<p style='margin:12px 0 0;font-size:0.78em;color:#8a8f98;line-height:1.4;'>"
+        f"{html_lib.escape(SIGNATURE_CONFIDENTIALITY)}</p>"
     )
 
 
@@ -363,8 +437,8 @@ def send_message(lead: sqlite3.Row, mailbox: Dict[str, Any]) -> Optional[Dict[st
     body = email_data["body"]
     step = lead["sequence_step"] or 0
     if step > 0:
-        if not subject.lower().startswith("re:"):
-            subject = f"Re: {subject}"
+        from followups import get_followup_subject
+        subject = get_followup_subject(step, subject)
         body = get_followup_body(lead, step)
 
     raw_cc = (DEFAULT_CC_EMAILS if get_cc_enabled(user_id) else []) + extra_cc
@@ -402,13 +476,11 @@ def send_test_email(
     user_id: int = 0,
 ) -> Dict[str, str]:
     """Send a one-off test email from a mailbox without touching the DB."""
-    from generator import _ai_personalisation, _assemble_body, _build_subject, _normalise_industry
+    from generator import _assemble_body, _build_subject
     from settings import get_cc_enabled
 
-    norm_industry = _normalise_industry(industry)
     subject = _build_subject(company_name)
-    personalisation = _ai_personalisation(company_name, norm_industry, "Malaysia", {})
-    body = _assemble_body(company_name, norm_industry, personalisation)
+    body = _assemble_body(company_name, user_id=user_id)
 
     from_addr = mailbox["alias"]
     cc_list = DEFAULT_CC_EMAILS if get_cc_enabled(user_id) else []

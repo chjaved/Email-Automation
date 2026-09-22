@@ -37,7 +37,7 @@ SESSION_COOKIE = "session"
 
 init_db()
 
-app = FastAPI(title="Campaign Engine Dashboard")
+app = FastAPI(title="ATLAS PROFESSIONAL BOOKKEEPING")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -883,12 +883,25 @@ async def api_import_csv(file: UploadFile = File(...), user: dict = Depends(curr
                 or row.get("Category") or row.get("category")
                 or ""
             ).strip() or "other"
+            website = (
+                row.get("Website") or row.get("website") or row.get("Web") or ""
+            ).strip() or None
+            location = (
+                row.get("Partial Address") or row.get("Address") or row.get("address")
+                or row.get("Location") or row.get("location") or ""
+            ).strip() or None
+            phone = (
+                row.get("Contacts") or row.get("Phone") or row.get("phone")
+                or row.get("Contact Number") or ""
+            ).strip()
+            socials = json.dumps({"phone": phone}, ensure_ascii=False) if phone else None
 
             emails = pick_emails(row)
             if not emails:
-                fallback = (row.get("Email") or row.get("email") or row.get("E-mail") or "").strip()
-                if fallback:
-                    emails = [fallback]
+                raw_fallback = (row.get("Email") or row.get("email") or row.get("E-mail") or "").strip()
+                if raw_fallback:
+                    from leads import extract_emails
+                    emails = extract_emails(raw_fallback).split()
 
             if not company or not emails:
                 skipped += 1
@@ -915,8 +928,8 @@ async def api_import_csv(file: UploadFile = File(...), user: dict = Depends(curr
                 continue
             try:
                 cur.execute(
-                    "INSERT INTO leads (company_name, email, industry, status, user_id) VALUES (?, ?, ?, 'new', ?)",
-                    (company, all_emails_str, industry.lower(), user["id"]),
+                    "INSERT INTO leads (company_name, email, industry, status, user_id, website, location, socials_json) VALUES (?, ?, ?, 'new', ?, ?, ?, ?)",
+                    (company, all_emails_str, industry.lower(), user["id"], website, location, socials),
                 )
                 imported += 1
             except Exception:
@@ -1078,7 +1091,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Campaign Engine Dashboard</title>
+<title>ATLAS PROFESSIONAL BOOKKEEPING</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
   :root {
@@ -1158,7 +1171,7 @@ INDEX_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
-    <h1>Campaign Engine<span class="sub">Outreach automation dashboard</span></h1>
+    <h1>ATLAS PROFESSIONAL BOOKKEEPING<span class="sub">Outreach automation dashboard</span></h1>
     <div style="text-align:right;font-size:0.85em;color:var(--muted);">
       <div id="whoami" style="margin-bottom:4px;"></div>
       <button class="btn secondary small" onclick="logout()">Sign out</button>
@@ -1239,10 +1252,10 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="col-list">
         <span class="col-chip">Company Name</span>
         <span class="col-chip">Industry / Category</span>
-        <span class="col-chip">HR Email</span>
-        <span class="col-chip">Recruitment Email</span>
-        <span class="col-chip">General Company Email</span>
         <span class="col-chip">Email</span>
+        <span class="col-chip">Website</span>
+        <span class="col-chip">Partial Address</span>
+        <span class="col-chip">Contacts</span>
       </div>
       <p class="hint">
         Only <code>Company Name</code> + one valid email are required &mdash; everything else is optional. Rows with an email
@@ -1346,7 +1359,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
       <div class="form-row">
         <label for="setFromDisplayName">Display name</label>
-        <input type="text" id="setFromDisplayName" placeholder="e.g. AP Online Jobs" />
+        <input type="text" id="setFromDisplayName" placeholder="e.g. Atlas Professional Bookkeeping" />
         <span class="desc">Shown as the sender's name in the recipient's inbox.</span>
       </div>
       <div class="form-row">
@@ -1367,7 +1380,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </p>
       <div class="form-row">
         <label for="setSigName">Name</label>
-        <input type="text" id="setSigName" placeholder="e.g. Seelaan" />
+        <input type="text" id="setSigName" placeholder="e.g. Stephen Darby" />
       </div>
       <div class="form-row">
         <label for="setSigTitle">Title / Position</label>
@@ -1375,7 +1388,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
       <div class="form-row">
         <label for="setSigCompany">Company</label>
-        <input type="text" id="setSigCompany" placeholder="e.g. iPros Edutech Sdn Bhd" />
+        <input type="text" id="setSigCompany" placeholder="e.g. Atlas Professional Bookkeeping" />
       </div>
       <div class="form-row">
         <label for="setSigEmail">Email</label>
@@ -1383,7 +1396,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
       <div class="form-row">
         <label for="setSigPhone">Phone</label>
-        <input type="text" id="setSigPhone" placeholder="e.g. +6014 3284126" />
+        <input type="text" id="setSigPhone" placeholder="Optional phone number" />
       </div>
       <div class="form-row">
         <label for="setSigWebsite">Website</label>
@@ -1401,7 +1414,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </p>
       <div class="form-row">
         <label for="setAiContext">Account brief</label>
-        <textarea id="setAiContext" rows="10" placeholder="e.g. We are Acme Recruitment, a licensed agency helping Malaysian employers hire skilled foreign workers. Tone: formal, British/Malaysian English. Key offer: zero-fee hiring for Bangladeshi workers, flat RM1,500 for other countries. Never mention pricing above these numbers. Avoid emojis." style="width:100%;font-family:inherit;font-size:14px;padding:10px;border:1px solid #d1d5db;border-radius:6px;resize:vertical;"></textarea>
+        <textarea id="setAiContext" rows="10" placeholder="e.g. We are Atlas Professional Bookkeeping, supporting Irish businesses with bookkeeping, VAT returns, payroll, bank reconciliation and invoice processing. Tone: professional Irish/British English. Focus on saving time, accurate records and dependable support. Avoid unsupported claims and emojis." style="width:100%;font-family:inherit;font-size:14px;padding:10px;border:1px solid #d1d5db;border-radius:6px;resize:vertical;"></textarea>
         <span class="desc">Saving a new brief clears cached AI emails for your existing leads so they get regenerated on the next send.</span>
       </div>
       <button class="btn" onclick="saveSettings()">Save brief</button>
@@ -2022,7 +2035,7 @@ AUTH_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Campaign Engine</title>
+<title>ATLAS PROFESSIONAL BOOKKEEPING</title>
 <style>
   :root {
     --bg: #f4f6fb; --surface: #ffffff; --border: #e6e9f0;
@@ -2069,7 +2082,7 @@ AUTH_HTML = """<!DOCTYPE html>
 <body>
   <div class="card">
     <h1 id="title">Sign in</h1>
-    <p class="sub" id="subtitle">Campaign Engine dashboard</p>
+    <p class="sub" id="subtitle">ATLAS PROFESSIONAL BOOKKEEPING</p>
     <div id="msg" class="msg"></div>
     <form id="authForm" onsubmit="return submitAuth(event)">
       <div class="form-row">

@@ -30,10 +30,11 @@ DO_NOT_EMAIL_PATH = BASE_DIR / "do_not_email.csv"
 GMAIL_CREDENTIALS = BASE_DIR / "credentials.json"
 GMAIL_TOKEN = BASE_DIR / "token.json"
 
-TIMEZONE = os.getenv("TIMEZONE", "Asia/Kuala_Lumpur")
-DAILY_CAP = int(os.getenv("DAILY_CAP", "20"))
-FROM_ALIAS = os.getenv("FROM_ALIAS", "").strip()  # legacy single-alias fallback
-FROM_DISPLAY_NAME = os.getenv("FROM_DISPLAY_NAME", "Javed Jabbar").strip()
+TIMEZONE = os.getenv("TIMEZONE", "Europe/Dublin")
+SEND_TIMEZONE = "Europe/Dublin"
+DAILY_CAP = int(os.getenv("DAILY_CAP", "50"))
+FROM_ALIAS = os.getenv("FROM_ALIAS", "admin@atlasprobookkeeping.ie").strip()  # legacy single-alias fallback
+FROM_DISPLAY_NAME = os.getenv("FROM_DISPLAY_NAME", "Atlas Professional Bookkeeping").strip()
 MIN_GAP_SECONDS = int(os.getenv("MIN_GAP_SECONDS", "90"))
 
 # Gmail OAuth scopes used for multi-mailbox sending and bounce/reply detection
@@ -46,32 +47,12 @@ GMAIL_SCOPES = [
 # respecting each mailbox's daily cap and warmup ramp schedule.
 MAILBOX_POOL = [
     {
-        "name": "info",
-        "address": "info@iprosedutech.com.my",
-        "alias": "fwiv-ai@iprosedutech.com.my",
-        "credentials": BASE_DIR / "credentials_info.json",
-        "token": BASE_DIR / "token_info.json",
-        "daily_cap": 1000,
-        "active": True,
-        "warmup_day": 8,
-    },
-    {
-        "name": "contact",
-        "address": "contact@iprosedutech.com.my",
-        "alias": "fwiv-ai-sys@iprosedutech.com.my",
-        "credentials": BASE_DIR / "credentials_contact.json",
-        "token": BASE_DIR / "token_contact.json",
-        "daily_cap": 1000,
-        "active": True,
-        "warmup_day": 0,
-    },
-    {
-        "name": "ipros",
-        "address": "ipros@iprosedutech.com.my",
-        "alias": "fwiv-ai-portal@iprosedutech.com.my",
-        "credentials": BASE_DIR / "credentials_ipros.json",
-        "token": BASE_DIR / "token_ipros.json",
-        "daily_cap": 1000,
+        "name": "atlas",
+        "address": "admin@atlasprobookkeeping.ie",
+        "alias": "admin@atlasprobookkeeping.ie",
+        "credentials": BASE_DIR / "credentials_atlas.json",
+        "token": BASE_DIR / "token_atlas.json",
+        "daily_cap": 80,
         "active": True,
         "warmup_day": 0,
     },
@@ -92,24 +73,39 @@ SMTP_USER = os.getenv("SMTP_USER", "").strip()
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
 
 # Company profile PDF to attach to every outbound email (optional; skipped if missing)
-ATTACHMENT_PATH = Path(os.getenv("ATTACHMENT_PATH", str(BASE_DIR / "AP_ONLINE_JOBS_COMPANY_PROFILE.pdf")))
+ATTACHMENT_PATH = Path(os.getenv("ATTACHMENT_PATH", str(BASE_DIR / "ATLAS_COMPANY_PROFILE.pdf")))
 
 # Email signature (single source of truth for both the plain-text and HTML
 # versions of every outbound email; the HTML version also embeds the logo
 # image below the contact details).
-SIGNATURE_NAME = os.getenv("SIGNATURE_NAME", "Javed Jabbar").strip()
-SIGNATURE_TITLE = os.getenv("SIGNATURE_TITLE", "Telemarketing Coordinator").strip()
-SIGNATURE_COMPANY = os.getenv("SIGNATURE_COMPANY", "AP ONLINE JOBS SDN BHD").strip()
-SIGNATURE_EMAIL = os.getenv("SIGNATURE_EMAIL", "javed@onlinejobs.my").strip()
-SIGNATURE_PHONE = os.getenv("SIGNATURE_PHONE", "0109086787").strip()
-SIGNATURE_WEBSITE = os.getenv("SIGNATURE_WEBSITE", "https://onlinejobs.my/").strip()
+SIGNATURE_NAME = os.getenv("SIGNATURE_NAME", "Stephen Darby").strip()
+SIGNATURE_TITLE = os.getenv("SIGNATURE_TITLE", "").strip()
+SIGNATURE_COMPANY = os.getenv("SIGNATURE_COMPANY", "Atlas Professional Bookkeeping").strip()
+SIGNATURE_EMAIL = os.getenv("SIGNATURE_EMAIL", "info@atlasprobookkeeping.ie").strip()
+SIGNATURE_PHONE = os.getenv("SIGNATURE_PHONE", "").strip()
+SIGNATURE_WEBSITE = os.getenv("SIGNATURE_WEBSITE", "https://www.atlasprobookkeeping.ie/").strip()
 # Logo image embedded inline in the HTML signature (optional; skipped if missing).
 SIGNATURE_LOGO_PATH = Path(os.getenv("SIGNATURE_LOGO_PATH", str(BASE_DIR / "signature_logo.png")))
+# Extra signature lines used by the Atlas email signature block.
+SIGNATURE_LINKEDIN = os.getenv(
+    "SIGNATURE_LINKEDIN", "https://www.linkedin.com/in/stephen-darby-8a65a166"
+).strip()
+SIGNATURE_ADDRESS = os.getenv("SIGNATURE_ADDRESS", "Navan, Co. Meath, Ireland").strip()
+SIGNATURE_SERVICES = os.getenv(
+    "SIGNATURE_SERVICES",
+    "Bookkeeping | VAT Returns | Payroll | Bank Reconciliation | Invoice Processing",
+).strip()
+SIGNATURE_CONFIDENTIALITY = os.getenv(
+    "SIGNATURE_CONFIDENTIALITY",
+    "This email and any attachments are confidential and intended solely for the use of "
+    "the named recipient(s). If you have received this email in error, please notify the "
+    "sender and delete it immediately.",
+).strip()
 
 # CC'd on every outbound email (initial + follow-ups + manual "Send now").
 DEFAULT_CC_EMAILS = [
     e.strip()
-    for e in os.getenv("DEFAULT_CC_EMAILS", "vasu@onlinejobs.my,seelan@onlinejobs.my").split(",")
+    for e in os.getenv("DEFAULT_CC_EMAILS", "").split(",")
     if e.strip()
 ]
 
@@ -124,7 +120,7 @@ BOUNCE_RATE_WINDOW = int(os.getenv("BOUNCE_RATE_WINDOW", "100"))
 BOUNCE_PAUSE_THRESHOLD = float(os.getenv("BOUNCE_PAUSE_THRESHOLD", "0.15"))
 BOUNCE_RATE_DAYS = int(os.getenv("BOUNCE_RATE_DAYS", "1"))
 
-FOLLOWUP_SCHEDULE = [int(x) for x in os.getenv("FOLLOWUP_SCHEDULE", "3,7,14").split(",") if x.strip()]
+FOLLOWUP_SCHEDULE = [int(x) for x in os.getenv("FOLLOWUP_SCHEDULE", "3,7").split(",") if x.strip()]
 # Default to 0.0.0.0 so this binds correctly on Railway/containers; override locally if needed.
 DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
 # Railway/Render/Heroku-style platforms inject PORT; prefer that over DASHBOARD_PORT if set.

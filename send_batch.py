@@ -18,19 +18,11 @@ NA_VALUES = {"", "not publicly available", "n/a", "na", "none", "-"}
 
 
 def pick_emails(row: dict) -> list:
-    """Return all valid, de-duplicated emails for a company.
-    Order: HR Email, Recruitment Email, General Company Email (first = To, rest = Cc).
-    """
-    found = []
-    seen = set()
-    for key in ("HR Email", "Recruitment Email", "General Company Email"):
-        val = (row.get(key) or "").strip()
-        if val.lower() in NA_VALUES:
-            continue
-        if EMAIL_RE.match(val) and val.lower() not in seen:
-            seen.add(val.lower())
-            found.append(val)
-    return found
+    """Return the valid company email from an Atlas lead row."""
+    val = (row.get("Email") or row.get("email") or "").strip()
+    if val.lower() in NA_VALUES or not EMAIL_RE.match(val):
+        return []
+    return [val]
 
 
 def load_targets(csv_path: Path, limit: int, skip_emails: set) -> list:

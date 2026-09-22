@@ -51,8 +51,8 @@ def get_from_display_name(user_id: int) -> str:
 
 def get_ai_context(user_id: int) -> str:
     """Free-form per-account context (business, offering, tone) that the AI
-    uses when drafting emails. Empty string when unset (AI falls back to the
-    generic recruitment pitch built into `generator.py`)."""
+    uses when drafting emails. Empty string when unset (the Atlas bookkeeping
+    template in `generator.py` is used)."""
     row = _get_row(user_id)
     return (row["ai_context"] if row and row["ai_context"] else "") or ""
 

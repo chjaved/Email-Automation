@@ -1,9 +1,8 @@
-"""AP Online Jobs email writing and caching.
+"""Atlas Professional Bookkeeping email writing and caching.
 
-Emails follow a fixed corporate template (introduction, services, Bangladeshi
-zero-fee highlight, transparent pricing, why-us, partner positioning,
-signature) with two short AI-generated paragraphs woven in for
-industry-specific personalisation.
+The initial email follows the fixed, user-approved Atlas template verbatim.
+The optional per-user `sample_email` path still lets the AI personalise a
+custom template per company when one is configured on the dashboard.
 """
 import json
 import logging
@@ -16,11 +15,15 @@ from openai import OpenAI
 
 from config import (
     OPENAI_API_KEY,
+    OPENAI_MINI_MODEL,
     OPENAI_MODEL,
+    SIGNATURE_ADDRESS,
     SIGNATURE_COMPANY,
+    SIGNATURE_CONFIDENTIALITY,
     SIGNATURE_EMAIL,
     SIGNATURE_NAME,
     SIGNATURE_PHONE,
+    SIGNATURE_SERVICES,
     SIGNATURE_TITLE,
     SIGNATURE_WEBSITE,
 )
@@ -34,11 +37,7 @@ if OPENAI_API_KEY:
 
 
 SUBJECT_TEMPLATES = [
-    "Foreign Worker Recruitment Support for {company_name}",
-    "Foreign Worker Recruitment Support for {company_name} - AP Online Jobs",
-    "Recruitment & Manpower Support for {company_name}",
-    "End-to-End Foreign Worker Recruitment for {company_name}",
-    "Foreign Worker Recruitment Partnership - {company_name}",
+    "Bookkeeping Support for Your Business",
 ]
 
 # Per-industry hints used both in the AI prompt and as safe fallbacks.
@@ -230,14 +229,13 @@ def _ai_personalisation(
 
     fallback_opening = (
         f"We understand that {company_name} operates in the "
-        f"{industry.replace('_', ' ')} space and may have ongoing "
-        f"requirements around {profile['operational_context']}."
+        f"{industry.replace('_', ' ')} sector, where accurate and timely financial records "
+        f"are important to confident day-to-day decision-making."
     )
     fallback_value = (
-        f"With ongoing operations of this nature, having dependable manpower "
-        f"such as {profile['workforce_categories']} can help {company_name} "
-        f"maintain service quality, operational efficiency and smooth "
-        f"day-to-day business activities."
+        f"Atlas Professional Bookkeeping can support {company_name} with reliable bookkeeping, "
+        f"VAT returns, payroll, bank reconciliation and invoice processing, helping reduce "
+        f"administrative pressure and keep its accounts organised."
     )
 
     if client is None:
@@ -261,20 +259,17 @@ def _ai_personalisation(
         f"Location: {location}\n"
         f"Website summary (may be empty): {summary}\n"
         f"Services mentioned (may be empty): {services}\n"
-        f"Typical workforce categories for this industry: {profile['workforce_categories']}\n"
-        f"Typical operational context: {profile['operational_context']}\n\n"
+        "Sender: Atlas Professional Bookkeeping, Ireland.\n"
+        "Services: bookkeeping, VAT returns, payroll, bank reconciliation and invoice processing.\n\n"
         "Write:\n"
-        "1. `opening` - 1 to 2 sentences acknowledging what the company does "
-        "and the type of workforce requirements it likely has. Reference the "
-        "company by name at least once. Be specific to the industry. Do NOT "
-        "assume any facts not supported by the inputs above.\n"
-        "2. `value` - 2 to 3 sentences explaining why dependable foreign "
-        "worker manpower matters for this specific industry and how it "
-        "supports the company's operations. Mention concrete workforce "
-        "categories relevant to the industry. Do NOT mention pricing, "
-        "Bangladesh, licences, or call-to-actions.\n\n"
+        "1. `opening` - 1 to 2 sentences acknowledging what the company does and a plausible "
+        "financial administration challenge in its industry. Reference the company by name. "
+        "Do not assume facts unsupported by the inputs.\n"
+        "2. `value` - 2 to 3 sentences explaining how professional bookkeeping can save time, "
+        "improve record accuracy and support compliance. Mention only relevant Atlas services. "
+        "Do not mention pricing or include a call-to-action.\n\n"
         "Constraints:\n"
-        "- Formal, corporate British/Malaysian English.\n"
+        "- Professional Irish/British English.\n"
         "- No emojis, no bullet points, no markdown.\n"
         "- No words like 'guaranteed' or 'urgent'.\n"
         "- Do not include a greeting, signature, or closing.\n\n"
@@ -306,22 +301,59 @@ def _ai_personalisation(
 # ---------------------------------------------------------------------------
 # Body assembly
 # ---------------------------------------------------------------------------
-SERVICES_INLINE = (
-    "FWCMS registration, Section 60K, OSC quota, levy coordination, VDR "
-    "processing, immigration, FOMEMA and worker mobilisation to deployment"
-)
-
-SIGNATURE = (
-    "Kind regards,\n\n"
-    f"{SIGNATURE_NAME}\n"
-    f"{SIGNATURE_TITLE}\n"
-    f"{SIGNATURE_COMPANY}\n"
-    f"Email: {SIGNATURE_EMAIL}\n"
-    f"Phone: {SIGNATURE_PHONE}\n"
-    f"Website: {SIGNATURE_WEBSITE}"
-)
-
 UNSUBSCRIBE = "Reply 'remove' if this isn't relevant and we won't email you again."
+
+# Approved initial outreach template (sent verbatim to every lead).
+# {opening} is replaced by a 1-2 line company-specific hook built from the
+# lead's scraped website summary (empty when no summary is available).
+INITIAL_BODY = (
+    "Hi,\n\n"
+    "I hope you're doing well.\n"
+    "{opening}"
+    "My name is Stephen Darby from Atlas Professional Bookkeeping. I support sole traders and "
+    "small to medium-sized businesses across Ireland with reliable and compliant bookkeeping - "
+    "so they can focus on running their business without the stress.\n\n"
+    "Many business owners I speak with mention similar challenges:\n"
+    "• Uncertainty around what needs to be tracked\n"
+    "• VAT and PAYE feeling complex or overwhelming\n"
+    "• Bookkeeping taking time away from day to day work.\n\n"
+    "That's where I can help.\n"
+    "At Atlas Professional Bookkeeping, I provide:\n"
+    "✔️ Accurate bookkeeping & bank reconciliations\n"
+    "✔️ VAT & PAYE preparation and filing\n"
+    "✔️ Payroll support\n"
+    "✔️ Friendly, dependable service - fully remotely across Ireland\n\n"
+    "I offer affordable monthly packages starting from €95. All packages include my full range "
+    "of services with pricing based solely on transaction volume and employee numbers. If you'd "
+    "like further details, feel free to reply to this email and I'll happily outline the options "
+    "available - with no obligation.\n\n"
+    "You can also find further details about my services at www.atlasprobookkeeping.ie\n\n"
+    "Wishing you every success with your business"
+)
+
+
+def _signature_lines(sig: Dict[str, str]) -> str:
+    """Format the shared Atlas signature block from a signature dict."""
+    website_display = re.sub(r"^https?://", "", sig["website"]).rstrip("/")
+    wordmark = "\n".join(sig["company"].upper().split())
+    parts = [
+        "Kind Regards,",
+        "",
+        wordmark,
+        "",
+        sig["name"],
+        sig["company"],
+        "",
+        f"E {sig['email']}",
+        f"W {website_display}",
+        "L LinkedIn Profile",
+        f"A {SIGNATURE_ADDRESS}",
+        "",
+        SIGNATURE_SERVICES,
+        "",
+        SIGNATURE_CONFIDENTIALITY,
+    ]
+    return "\n".join(parts)
 
 
 def _build_signature(user_id: int) -> str:
@@ -338,55 +370,77 @@ def _build_signature(user_id: int) -> str:
             "phone": SIGNATURE_PHONE,
             "website": SIGNATURE_WEBSITE,
         }
-    return (
-        "Kind regards,\n\n"
-        f"{sig['name']}\n"
-        f"{sig['title']}\n"
-        f"{sig['company']}\n"
-        f"Email: {sig['email']}\n"
-        f"Phone: {sig['phone']}\n"
-        f"Website: {sig['website']}"
+    return _signature_lines(sig)
+
+
+_LEGAL_SUFFIX_RE = re.compile(
+    r"\b(company\s+limited\s+by\s+(shares|guarantee)|limited|ltd\.?|plc|dac|clg|ulc|llp|llc|inc\.?|pte\.?\s*ltd\.?|sdn\.?\s*bhd\.?)\b\.?",
+    re.IGNORECASE,
+)
+
+
+def _display_name(company_name: str) -> str:
+    """'EVERLEIGH EQUESTRIAN LIMITED' -> 'Everleigh Equestrian' for use
+    inside email prose (legal suffixes read awkwardly mid-sentence)."""
+    name = _LEGAL_SUFFIX_RE.sub("", company_name or "").strip(" -,.")
+    if not name:
+        return company_name or ""
+    # Title-case all-caps names; leave mixed-case names alone.
+    if name.isupper():
+        name = name.title()
+    return name
+
+
+def _opening_hook(company_name: str, location: str, enriched: Dict[str, Any]) -> str:
+    """Build a 1-2 line personalised opening from the lead's scraped website
+    summary. Returns '' when there's nothing reliable to reference."""
+    summary = (enriched.get("summary") or enriched.get("company_description") or "").strip()
+    if not summary:
+        return ""
+
+    display = _display_name(company_name)
+    if client is None:
+        return (
+            f"I came across {display} and noticed the work you do - "
+            "it looks like a busy operation to keep on top of.\n"
+        )
+
+    prompt = (
+        "You are writing the opening line(s) of a cold B2B email from an Irish "
+        "bookkeeper (Stephen Darby, Atlas Professional Bookkeeping) to a company.\n\n"
+        f"Recipient company: {display}\n"
+        f"Location: {location or 'Ireland'}\n"
+        f"What the company does (from their website): {summary[:600]}\n\n"
+        "Write 1-2 short sentences (max ~35 words total) that go right after "
+        "'I hope you're doing well.' - acknowledge what the company actually "
+        "does and hint that their kind of business has real bookkeeping/VAT "
+        "admin to stay on top of. Sound natural and specific, not flattering "
+        "or salesy. Reference the company by name. No greeting, no questions, "
+        "no emojis, no pricing. Irish/British English.\n\n"
+        "Return ONLY the sentence(s), nothing else."
     )
+    try:
+        resp = client.chat.completions.create(
+            model=OPENAI_MINI_MODEL,
+            messages=[
+                {"role": "system", "content": "You write short, natural opening lines for B2B emails."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.6,
+            max_tokens=120,
+        )
+        opening = (resp.choices[0].message.content or "").strip().strip('"')
+        if not opening:
+            return ""
+        return opening + "\n"
+    except Exception as e:
+        logger.warning("Opening hook generation failed for %s: %s", company_name, e)
+        return ""
 
 
-def _assemble_body(company_name: str, industry: str, personalisation: Dict[str, str], user_id: int = 0) -> str:
-    profile = _industry_profile(industry)
-    greeting = "Dear Tan Sir/Datuk/Datin/Sir/Madam,"
-
-    intro = (
-        f"I'm writing from Agensi Pekerjaan Online Jobs Sdn. Bhd. (AP Online "
-        f"Jobs), a Licensed Class C Recruitment Agency (JTKSM 594) with 18 "
-        f"years' experience handling end-to-end foreign worker recruitment "
-        f"for Malaysian employers - {SERVICES_INLINE}."
-    )
-
-    pricing = (
-        f"Pricing is simple and transparent: for Bangladeshi workers recruited "
-        f"through us we waive our fees entirely (zero processing fee); for "
-        f"other approved source countries it's a flat RM 1,500 per worker. "
-        f"No upfront charges - fees are billed only after approval. "
-        f"Statutory government charges (levy, FOMEMA, visa fees) remain "
-        f"payable by the employer as usual."
-    )
-
-    partner_para = (
-        f"If {company_name} already works with recruitment partners, we're "
-        f"not asking to replace them - only to be considered as an additional "
-        f"option for future manpower needs, especially for "
-        f"{profile['workforce_categories']}."
-    )
-
+def _assemble_body(company_name: str, user_id: int = 0, opening: str = "") -> str:
     body = (
-        f"{greeting}\n\n"
-        f"{personalisation['opening']}\n\n"
-        f"{intro}\n\n"
-        f"{personalisation['value']}\n\n"
-        f"{pricing}\n\n"
-        f"{partner_para}\n\n"
-        f"Our company profile is attached for your reference. I'd be glad to "
-        f"arrange a short call to understand {company_name}'s requirements "
-        f"and walk through the available source countries and options.\n\n"
-        f"Thank you for your time.\n\n"
+        f"{INITIAL_BODY.format(opening=opening)}\n\n"
         f"{_build_signature(user_id)}\n\n"
         f"---\n{UNSUBSCRIBE}"
     )
@@ -563,8 +617,8 @@ def _get_or_generate(lead: sqlite3.Row) -> Dict[str, str]:
         body = result["body"]
     else:
         subject = _build_subject(company_name)
-        personalisation = _ai_personalisation(company_name, industry, location, enriched, ai_context)
-        body = _assemble_body(company_name, industry, personalisation, lead_user_id or 0)
+        opening = _opening_hook(company_name, location, enriched)
+        body = _assemble_body(company_name, lead_user_id or 0, opening)
 
     conn = get_conn()
     cur = conn.cursor()

@@ -166,7 +166,7 @@ def classify_industry(company_name: str, context: str) -> str:
 def generate_summary(company_name: str, context: str) -> str:
     prompt = (
         f"Write a concise 2-3 sentence company summary for '{company_name}' based only on the text below. "
-        "Mention what the company does, the services or products it appears to offer, and any signals about company size or hiring needs.\n\n"
+        "Mention what the company does and the services or products it appears to offer, focusing on details useful for a bookkeeping introduction.\n\n"
         f"Text: {context[:4000]}\n\n"
         "Return only the summary."
     )
@@ -190,7 +190,7 @@ def fallback_enrich(company_name: str) -> Dict[str, Any]:
     industry = data.get("industry", "other").strip().lower()
     if industry not in allowed:
         industry = "other"
-    summary = data.get("summary", f"{company_name} is a business that may benefit from workforce solutions.").strip()
+    summary = data.get("summary", f"{company_name} is a business that may benefit from reliable bookkeeping support.").strip()
     return {
         "industry": industry,
         "summary": summary,
@@ -201,7 +201,6 @@ def fallback_enrich(company_name: str) -> Dict[str, Any]:
 def extract_features(text: str) -> Dict[str, Any]:
     services: List[str] = []
     size_signals: List[str] = []
-    hiring_mentions: List[str] = []
 
     lowered = text.lower()
     if any(w in lowered for w in ["construction", "contractor", "builder", "civil", "project"]):
@@ -213,11 +212,6 @@ def extract_features(text: str) -> Dict[str, Any]:
     if any(w in lowered for w in ["manufacturing", "factory", "production", "assembly", "industrial"]):
         services.append("manufacturing / production")
 
-    if any(w in lowered for w in ["hiring", "recruitment", "vacancy", "job", "career", "join us", "we are looking for"]):
-        hiring_mentions.append("hiring signals detected")
-    if any(w in lowered for w in ["staffing", "manpower", "workforce", "labour", "labor"]):
-        hiring_mentions.append("staffing/manpower mention")
-
     if any(w in lowered for w in ["over 100", "more than 100", "100+", "large team", "500 employees", "hundreds of"]):
         size_signals.append("possible larger organisation")
     elif any(w in lowered for w in ["small team", "boutique", "family-run", "startup", "growing"]):
@@ -226,7 +220,6 @@ def extract_features(text: str) -> Dict[str, Any]:
     return {
         "services_mentioned": services,
         "size_signals": size_signals,
-        "hiring_mentions": hiring_mentions,
     }
 
 
@@ -277,7 +270,6 @@ def enrich_lead(lead: sqlite3.Row) -> Dict[str, Any]:
         "company_description": (home.meta_description or home.title or about.meta_description or "")[:500],
         "services_mentioned": features.get("services_mentioned", []),
         "size_signals": features.get("size_signals", []),
-        "hiring_mentions": features.get("hiring_mentions", []),
         "scraped_pages": [p for p in [home.url, about.url] if p],
         "source": "website_scraping",
     }

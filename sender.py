@@ -27,6 +27,7 @@ from config import (
     FOLLOWUP_SCHEDULE,
     MAILBOX_POOL,
     SEND_INTERVAL_SECONDS,
+    SEND_TIMEZONE,
     TIMEZONE,
 )
 from db import get_conn, log_event
@@ -340,6 +341,15 @@ def detect_bounces_and_replies(
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+def _is_sending_window(now: Optional[datetime] = None) -> bool:
+    local_now = now or datetime.now(ZoneInfo(SEND_TIMEZONE))
+    if local_now.tzinfo is None:
+        local_now = local_now.replace(tzinfo=ZoneInfo(SEND_TIMEZONE))
+    else:
+        local_now = local_now.astimezone(ZoneInfo(SEND_TIMEZONE))
+    return local_now.weekday() < 5 and 9 <= local_now.hour < 17
+
+
 def _due_leads(user_id: int) -> List[sqlite3.Row]:
     now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
     conn = get_conn()
@@ -483,8 +493,8 @@ def send_due(user_id: int) -> int:
     gap_min = get_send_gap_min(user_id)
     gap_max = get_send_gap_max(user_id)
 
-    # Decide send path: per-user SMTP mailbox pool (e.g. recruitment@ +
-    # info@onlinejobs.my) when configured, otherwise the shared Gmail-API pool.
+    # Decide send path: per-user SMTP mailbox pool when configured,
+    # otherwise the shared Gmail-API pool.
     smtp_mbs = get_active_smtp_mailboxes(user_id)
     use_smtp = bool(smtp_mbs)
     legacy_smtp_user = get_smtp_user(user_id)
@@ -512,6 +522,9 @@ def send_due(user_id: int) -> int:
     for lead in due:
         if is_paused(user_id):
             logger.warning("Campaign is paused; stopping send loop.")
+            break
+        if not _is_sending_window():
+            logger.info("Outside the Monday-Friday 09:00-17:00 Europe/Dublin sending window.")
             break
 
         if is_do_not_email(lead["email"].split()[0] if lead["email"] else ""):
@@ -548,6 +561,9 @@ def send_due(user_id: int) -> int:
             if mailbox is None:
                 logger.info("All mailboxes at daily cap. Stopping.")
                 break
+        if not _is_sending_window():
+            logger.info("Sending window closed while waiting for a mailbox.")
+            break
 
         mb_name = smtp_mb["smtp_user"] if smtp_mb else mailbox["name"]
 
@@ -866,7 +882,7 @@ def _auto_promote_due_leads(user_id: int) -> int:
     """When auto-send is enabled, promote new/enriched leads and due follow-ups
     to 'scheduled' (scheduled_at=now) so the send loop picks them up.
 
-    Simple FIFO, respects the per-user daily send cap. No time-of-day windows.
+    Simple FIFO, respects the per-user daily send cap and sending window.
     """
     from settings import get_auto_send_enabled, get_daily_send_cap
     from followups import step_to_wait_days
@@ -874,10 +890,13 @@ def _auto_promote_due_leads(user_id: int) -> int:
     if not get_auto_send_enabled(user_id):
         logger.info("Auto-promote: auto_send_enabled is OFF for user %s", user_id)
         return 0
+    if not _is_sending_window():
+        logger.info("Auto-promote skipped outside the Monday-Friday 09:00-17:00 Europe/Dublin sending window.")
+        return 0
 
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz)
-    today_iso = now.date().isoformat()
+    today_iso = datetime.now(ZoneInfo(SEND_TIMEZONE)).date().isoformat()
 
     conn = get_conn()
     cur = conn.cursor()
