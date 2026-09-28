@@ -673,9 +673,15 @@ def send_due(user_id: int) -> int:
                 mailbox["name"], delay, user_id, sent_count,
             )
         else:
-            # SMTP path: single sender, so pace each send by the gap.
+            # SMTP path: pace the user's send before yielding to the next user.
             logger.info("SMTP cooldown %ds (user %s, sent this cycle %d)", delay, user_id, sent_count)
             time.sleep(delay)
+
+        # Fair multi-tenant scheduling: one attempted send per user per daemon
+        # cycle prevents an employee with a large list from monopolising the
+        # worker while other employees wait indefinitely.
+        if sent_count >= 1:
+            break
 
     conn.close()
     return sent_count
