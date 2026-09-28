@@ -49,11 +49,8 @@ CANONICAL_HEADERS = {
         "telephone",
         "mobile",
         "contact number",
-        "contacts",
-        "contact",
-        "contact details",
     ],
-    "industry": ["industry", "sector", "business type"],
+    "industry": ["industry", "sector", "business type", "type"],
     "location": [
         "location",
         "city",
@@ -132,30 +129,6 @@ def validate_email(email: str) -> bool:
     return bool(EMAIL_RE.match(email.strip()))
 
 
-_EMAIL_FIND_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-
-
-def extract_emails(value: str) -> str:
-    """Pull every email address out of a messy CSV cell.
-
-    Handles cells that contain an email mixed with other text
-    ("info@mep.ie | 0818 22 22 12"), percent-encoded addresses
-    ("%68i%40elisababysitting.com" -> "hi@elisababysitting.com") and
-    multiple addresses. Returns a space-separated string (first = primary).
-    """
-    from urllib.parse import unquote
-
-    cleaned = unquote(str(value or "").strip())
-    found = _EMAIL_FIND_RE.findall(cleaned)
-    seen: set = set()
-    out: List[str] = []
-    for addr in found:
-        if addr.lower() not in seen:
-            seen.add(addr.lower())
-            out.append(addr)
-    return " ".join(out)
-
-
 def load_csv(path: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
@@ -204,8 +177,8 @@ def add_do_not_email(email: str) -> None:
         f.write(f"{email.strip().lower()}\n")
 
 
-def ingest_csv(csv_path: Path, user_id: Optional[int] = None) -> Dict[str, int]:
-    """Import a CSV and upsert leads for the given user (None = unassigned)."""
+def ingest_csv(csv_path: Path) -> Dict[str, int]:
+    """Import a CSV and upsert leads."""
     ensure_do_not_email_file()
     rows = load_csv(csv_path)
     conn = get_conn()
@@ -221,32 +194,27 @@ def ingest_csv(csv_path: Path, user_id: Optional[int] = None) -> Dict[str, int]:
 
     seen: set = set()
     for row in rows:
-        raw_email = extract_emails(str(row.get("email", "")))
+        raw_email = str(row.get("email", "")).strip()
         if not raw_email:
             continue
 
-        primary = raw_email.split()[0].lower()
-        if primary in seen:
+        if raw_email.lower() in seen:
             stats["duplicate"] += 1
             continue
-        seen.add(primary)
+        seen.add(raw_email.lower())
 
-        if not validate_email(primary):
+        if not validate_email(raw_email):
             stats["invalid"] += 1
             continue
 
-        if is_do_not_email(primary):
+        if is_do_not_email(raw_email):
             stats["blocked"] += 1
             continue
 
         company_name = str(row.get("company_name", "")).strip()
         website = normalize_website(str(row.get("website", "")))
-        industry_raw = str(row.get("industry", "")).strip().lower()
-        # Columns like CRO "Type" hold the legal form ("Ltd - Private Company
-        # Limited By Shares"), not a business sector - treat them as unknown.
-        if re.search(r"\b(ltd|limited|by shares|by guarantee|company limited)\b", industry_raw):
-            industry_raw = ""
-        industry = industry_raw or "other"
+        socials = parse_socials(row, {})
+        industry = str(row.get("industry", "")).strip().lower() or None
         location = str(row.get("location", "")).strip() or None
 
         # Rebuild socials with whatever column mapping we have from the row
@@ -260,11 +228,11 @@ def ingest_csv(csv_path: Path, user_id: Optional[int] = None) -> Dict[str, int]:
             cur.execute(
                 """
                 INSERT INTO leads
-                (company_name, email, website, socials_json, industry, location, status, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, 'new', ?)
+                (company_name, email, website, socials_json, industry, location, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'new')
                 ON CONFLICT(email, user_id) DO NOTHING
                 """,
-                (company_name, raw_email, website, socials, industry, location, user_id),
+                (company_name, raw_email, website, socials, industry, location),
             )
             if cur.rowcount:
                 stats["valid"] += 1

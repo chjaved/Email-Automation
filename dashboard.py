@@ -37,7 +37,7 @@ SESSION_COOKIE = "session"
 
 init_db()
 
-app = FastAPI(title="ATLAS PROFESSIONAL BOOKKEEPING")
+app = FastAPI(title="AP ONLINE JOBS CAMPAIGN ENGINE")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1116,7 +1116,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>ATLAS PROFESSIONAL BOOKKEEPING</title>
+<title>AP ONLINE JOBS CAMPAIGN ENGINE</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
   :root {
@@ -1196,7 +1196,7 @@ INDEX_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
-    <h1>ATLAS PROFESSIONAL BOOKKEEPING<span class="sub">Outreach automation dashboard</span></h1>
+    <h1>AP ONLINE JOBS CAMPAIGN ENGINE<span class="sub">Outreach automation dashboard</span></h1>
     <div style="text-align:right;font-size:0.85em;color:var(--muted);">
       <div id="whoami" style="margin-bottom:4px;"></div>
       <button class="btn secondary small" onclick="logout()">Sign out</button>
@@ -1391,7 +1391,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
       <div class="form-row">
         <label for="setFromDisplayName">Display name</label>
-        <input type="text" id="setFromDisplayName" placeholder="e.g. Atlas Professional Bookkeeping" />
+        <input type="text" id="setFromDisplayName" placeholder="e.g. AP Online Jobs Sdn Bhd" />
         <span class="desc">Shown as the sender's name in the recipient's inbox.</span>
       </div>
       <div class="form-row">
@@ -1412,7 +1412,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </p>
       <div class="form-row">
         <label for="setSigName">Name</label>
-        <input type="text" id="setSigName" placeholder="e.g. Stephen Darby" />
+        <input type="text" id="setSigName" placeholder="e.g. Seelaan" />
       </div>
       <div class="form-row">
         <label for="setSigTitle">Title / Position</label>
@@ -1420,7 +1420,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
       <div class="form-row">
         <label for="setSigCompany">Company</label>
-        <input type="text" id="setSigCompany" placeholder="e.g. Atlas Professional Bookkeeping" />
+        <input type="text" id="setSigCompany" placeholder="e.g. AP Online Jobs Sdn Bhd" />
       </div>
       <div class="form-row">
         <label for="setSigEmail">Email</label>
@@ -1446,7 +1446,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </p>
       <div class="form-row">
         <label for="setAiContext">Account brief</label>
-        <textarea id="setAiContext" rows="10" placeholder="e.g. We are Atlas Professional Bookkeeping, supporting Irish businesses with bookkeeping, VAT returns, payroll, bank reconciliation and invoice processing. Tone: professional Irish/British English. Focus on saving time, accurate records and dependable support. Avoid unsupported claims and emojis." style="width:100%;font-family:inherit;font-size:14px;padding:10px;border:1px solid #d1d5db;border-radius:6px;resize:vertical;"></textarea>
+        <textarea id="setAiContext" rows="10" placeholder="e.g. We are AP Online Jobs, a licensed Malaysian recruitment agency helping employers recruit skilled and unskilled foreign workers. Tone: formal Malaysian/British English. Focus on compliant recruitment and dependable manpower support. Avoid unsupported claims and emojis." style="width:100%;font-family:inherit;font-size:14px;padding:10px;border:1px solid #d1d5db;border-radius:6px;resize:vertical;"></textarea>
         <span class="desc">Saving a new brief clears cached AI emails for your existing leads so they get regenerated on the next send.</span>
       </div>
       <button class="btn" onclick="saveSettings()">Save brief</button>
@@ -2082,7 +2082,7 @@ AUTH_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>ATLAS PROFESSIONAL BOOKKEEPING</title>
+<title>AP ONLINE JOBS CAMPAIGN ENGINE</title>
 <style>
   :root {
     --bg: #f4f6fb; --surface: #ffffff; --border: #e6e9f0;
@@ -2129,7 +2129,7 @@ AUTH_HTML = """<!DOCTYPE html>
 <body>
   <div class="card">
     <h1 id="title">Sign in</h1>
-    <p class="sub" id="subtitle">ATLAS PROFESSIONAL BOOKKEEPING</p>
+    <p class="sub" id="subtitle">AP ONLINE JOBS CAMPAIGN ENGINE</p>
     <div id="msg" class="msg"></div>
     <form id="authForm" onsubmit="return submitAuth(event)">
       <div class="form-row">
