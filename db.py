@@ -146,6 +146,12 @@ def _add_missing_columns_sqlite(conn) -> None:
         "events": [
             ("mailbox", "TEXT", "NULL"),
         ],
+        "users": [
+            ("must_change_password", "INTEGER", "0"),
+        ],
+        "smtp_mailboxes": [
+            ("aggregate_daily_cap", "INTEGER", "1000"),
+        ],
         "user_settings": [
             ("cc_enabled", "INTEGER", "1"),
             ("ai_context", "TEXT", "NULL"),
@@ -191,6 +197,12 @@ def _add_missing_columns_postgres(conn) -> None:
         ],
         "events": [
             ("mailbox", "TEXT", "NULL"),
+        ],
+        "users": [
+            ("must_change_password", "INTEGER", "0"),
+        ],
+        "smtp_mailboxes": [
+            ("aggregate_daily_cap", "INTEGER", "1000"),
         ],
         "user_settings": [
             ("cc_enabled", "INTEGER", "1"),
@@ -289,6 +301,7 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     is_admin INTEGER DEFAULT 0,
+    must_change_password INTEGER DEFAULT 0,
     created_at TEXT
 );
 
@@ -336,6 +349,7 @@ CREATE TABLE IF NOT EXISTS smtp_mailboxes (
     from_alias TEXT,
     display_name TEXT,
     daily_cap INTEGER DEFAULT 300,
+    aggregate_daily_cap INTEGER DEFAULT 1000,
     active INTEGER DEFAULT 1,
     created_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id)
@@ -417,6 +431,7 @@ POSTGRES_SCHEMA_STATEMENTS = [
         email TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         is_admin INTEGER DEFAULT 0,
+        must_change_password INTEGER DEFAULT 0,
         created_at TEXT
     )
     """,
@@ -465,6 +480,7 @@ POSTGRES_SCHEMA_STATEMENTS = [
         from_alias TEXT,
         display_name TEXT,
         daily_cap INTEGER DEFAULT 300,
+        aggregate_daily_cap INTEGER DEFAULT 1000,
         active INTEGER DEFAULT 1,
         created_at TEXT
     )

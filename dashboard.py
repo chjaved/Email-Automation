@@ -53,7 +53,7 @@ def _get_user(user_id: int) -> Optional[dict]:
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, email, is_admin FROM users WHERE id = ?", (user_id,))
+        cur.execute("SELECT id, email, is_admin, must_change_password FROM users WHERE id = ?", (user_id,))
         row = cur.fetchone()
         return dict(row) if row else None
     finally:
@@ -64,7 +64,7 @@ def _get_user_by_email(email: str) -> Optional[dict]:
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, email, password_hash, is_admin FROM users WHERE email = ?", (email.lower().strip(),))
+        cur.execute("SELECT id, email, password_hash, is_admin, must_change_password FROM users WHERE email = ?", (email.lower().strip(),))
         row = cur.fetchone()
         return dict(row) if row else None
     finally:
@@ -167,6 +167,11 @@ class LoginBody(BaseModel):
     password: str
 
 
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
 def _set_session_cookie(response: Response, user_id: int) -> None:
     token = create_session_token(user_id)
     response.set_cookie(
@@ -193,7 +198,27 @@ def api_login(body: LoginBody, response: Response):
     if not user or not verify_password(body.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     _set_session_cookie(response, user["id"])
-    return {"ok": True, "user": {"id": user["id"], "email": user["email"], "is_admin": bool(user["is_admin"])}}
+    return {"ok": True, "user": {"id": user["id"], "email": user["email"], "is_admin": bool(user["is_admin"]), "must_change_password": bool(user["must_change_password"])}}
+
+
+@app.post("/api/change-password")
+def api_change_password(body: ChangePasswordBody, user: dict = Depends(current_user)):
+    if len(body.new_password) < 12:
+        raise HTTPException(status_code=400, detail="New password must be at least 12 characters")
+    record = _get_user_by_email(user["email"])
+    if not record or not verify_password(body.current_password, record["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
+            (hash_password(body.new_password), user["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
 
 
 @app.post("/api/logout")
@@ -204,7 +229,7 @@ def api_logout(response: Response):
 
 @app.get("/api/me")
 def api_me(user: dict = Depends(current_user)):
-    return {"id": user["id"], "email": user["email"], "is_admin": bool(user["is_admin"])}
+    return {"id": user["id"], "email": user["email"], "is_admin": bool(user["is_admin"]), "must_change_password": bool(user["must_change_password"])}
 
 
 @app.get("/api/data")
@@ -1336,6 +1361,13 @@ INDEX_HTML = """<!DOCTYPE html>
   <!-- ===================== SETTINGS ===================== -->
   <div class="tab-panel" id="panel-settings">
     <div class="section">
+      <h3>Change password</h3>
+      <p class="hint">Temporary passwords must be changed after the first login.</p>
+      <div class="form-row"><label for="currentPassword">Current password</label><input type="password" id="currentPassword" /></div>
+      <div class="form-row"><label for="newPassword">New password</label><input type="password" id="newPassword" minlength="12" /></div>
+      <button class="btn" onclick="changePassword()">Change password</button>
+    </div>
+    <div class="section">
       <h3>Sender identity</h3>
       <p class="hint">
         Controls which Gmail account authenticates the SMTP connection, and which address/name recipients see as the
@@ -1590,6 +1622,21 @@ INDEX_HTML = """<!DOCTYPE html>
       } catch (e) {
         showToast(e.message, false);
       }
+    }
+
+    async function changePassword() {
+      const body = {
+        current_password: document.getElementById('currentPassword').value,
+        new_password: document.getElementById('newPassword').value,
+      };
+      try {
+        const res = await fetch('/api/change-password', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Password change failed');
+        document.getElementById('currentPassword').value = '';
+        document.getElementById('newPassword').value = '';
+        showToast('Password changed', true);
+      } catch (e) { showToast(e.message, false); }
     }
 
     async function saveSettings() {

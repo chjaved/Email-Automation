@@ -164,6 +164,7 @@ def list_smtp_mailboxes(user_id: int) -> list:
                 "from_alias": (r["from_alias"] or "").strip(),
                 "display_name": (r["display_name"] or "").strip(),
                 "daily_cap": int(r["daily_cap"] or 300),
+                "aggregate_daily_cap": int(r["aggregate_daily_cap"] or 1000),
                 "active": bool(r["active"]),
             }
         )
@@ -187,6 +188,7 @@ def get_active_smtp_mailboxes(user_id: int) -> list:
                 "from_alias": get_from_alias(user_id),
                 "display_name": get_from_display_name(user_id),
                 "daily_cap": get_daily_send_cap(user_id),
+                "aggregate_daily_cap": get_daily_send_cap(user_id),
                 "active": True,
             }
         ]
@@ -200,6 +202,7 @@ def upsert_smtp_mailbox(
     from_alias: str = "",
     display_name: str = "",
     daily_cap: int = 300,
+    aggregate_daily_cap: int = 1000,
     active: bool = True,
 ) -> int:
     """Insert or update an smtp_mailboxes row keyed on (user_id, smtp_user).
@@ -218,16 +221,16 @@ def upsert_smtp_mailbox(
         if row:
             cur.execute(
                 """UPDATE smtp_mailboxes SET smtp_password_enc = ?, from_alias = ?,
-                display_name = ?, daily_cap = ?, active = ? WHERE id = ?""",
-                (enc, from_alias, display_name, daily_cap, 1 if active else 0, row["id"]),
+                display_name = ?, daily_cap = ?, aggregate_daily_cap = ?, active = ? WHERE id = ?""",
+                (enc, from_alias, display_name, daily_cap, aggregate_daily_cap, 1 if active else 0, row["id"]),
             )
             mb_id = row["id"]
         else:
             cur.execute(
                 """INSERT INTO smtp_mailboxes
-                (user_id, smtp_user, smtp_password_enc, from_alias, display_name, daily_cap, active, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, smtp_user, enc, from_alias, display_name, daily_cap, 1 if active else 0, now),
+                (user_id, smtp_user, smtp_password_enc, from_alias, display_name, daily_cap, aggregate_daily_cap, active, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, smtp_user, enc, from_alias, display_name, daily_cap, aggregate_daily_cap, 1 if active else 0, now),
             )
             mb_id = getattr(cur, "lastrowid", None) or 0
         conn.commit()

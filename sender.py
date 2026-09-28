@@ -454,28 +454,43 @@ def _pick_ready_mailbox(
         time.sleep(wait)
 
 
-def _smtp_sends_today(conn, smtp_user: str, legacy_smtp_user: str = "") -> int:
-    """Sends logged today for one SMTP mailbox. The generic legacy 'smtp'
-    bucket (events written before per-mailbox tracking) is attributed to the
-    mailbox matching the user's legacy smtp_user setting — that's the account
-    that actually sent those."""
-    from mailboxes import _sends_today
-
-    n = _sends_today(conn, smtp_user)
+def _smtp_sends_today(conn, user_id: int, smtp_user: str, legacy_smtp_user: str = "") -> int:
+    """Today's successful sends by one user through an SMTP mailbox."""
+    today_iso = datetime.now(ZoneInfo(TIMEZONE)).date().isoformat()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT COUNT(*) AS n FROM events e JOIN leads l ON l.id = e.lead_id
+        WHERE l.user_id = ? AND e.event_type = 'sent' AND e.mailbox = ?
+        AND substr(e.created_at, 1, 10) = ?""",
+        (user_id, smtp_user, today_iso),
+    )
+    n = cur.fetchone()["n"]
     if legacy_smtp_user and smtp_user == legacy_smtp_user:
-        n += _sends_today(conn, "smtp")
+        cur.execute(
+            """SELECT COUNT(*) AS n FROM events e JOIN leads l ON l.id = e.lead_id
+            WHERE l.user_id = ? AND e.event_type = 'sent' AND e.mailbox = 'smtp'
+            AND substr(e.created_at, 1, 10) = ?""",
+            (user_id, today_iso),
+        )
+        n += cur.fetchone()["n"]
     return n
 
 
+def _smtp_aggregate_sends_today(conn, smtp_user: str) -> int:
+    """Today's successful sends across all employees sharing an SMTP login."""
+    from mailboxes import _sends_today
+    return _sends_today(conn, smtp_user)
+
+
 def _pick_smtp_mailbox(
-    smtp_mbs: List[Dict[str, Any]], sent_today: Dict[str, int]
+    smtp_mbs: List[Dict[str, Any]], sent_today: Dict[str, int], aggregate_today: Dict[str, int]
 ) -> Optional[Dict[str, Any]]:
-    """Return the active SMTP mailbox with the fewest sends today that is
-    still under its own daily cap. Returns None when all are at cap.
-    Picking the least-used mailbox naturally spreads volume across the pool
-    and honours each mailbox's independent cap (e.g. 100 vs 300)."""
+    """Choose a mailbox that is below both the employee allocation and the
+    aggregate cap shared by everyone authenticating through that mailbox."""
     under_cap = [
-        m for m in smtp_mbs if sent_today.get(m["smtp_user"], 0) < m.get("daily_cap", 300)
+        m for m in smtp_mbs
+        if sent_today.get(m["smtp_user"], 0) < m.get("daily_cap", 300)
+        and aggregate_today.get(m["smtp_user"], 0) < m.get("aggregate_daily_cap", 1000)
     ]
     if not under_cap:
         return None
@@ -513,10 +528,14 @@ def send_due(user_id: int) -> int:
     # Per-SMTP-mailbox sends today, seeded from the events log so a worker
     # restart mid-day doesn't reset the caps.
     smtp_sent_today: Dict[str, int] = {}
+    smtp_aggregate_today: Dict[str, int] = {}
     if use_smtp:
         for m in smtp_mbs:
             smtp_sent_today[m["smtp_user"]] = _smtp_sends_today(
-                conn, m["smtp_user"], legacy_smtp_user
+                conn, user_id, m["smtp_user"], legacy_smtp_user
+            )
+            smtp_aggregate_today[m["smtp_user"]] = _smtp_aggregate_sends_today(
+                conn, m["smtp_user"]
             )
 
     for lead in due:
@@ -552,7 +571,7 @@ def send_due(user_id: int) -> int:
         smtp_mb = None
         mailbox = None
         if use_smtp:
-            smtp_mb = _pick_smtp_mailbox(smtp_mbs, smtp_sent_today)
+            smtp_mb = _pick_smtp_mailbox(smtp_mbs, smtp_sent_today, smtp_aggregate_today)
             if smtp_mb is None:
                 logger.info("All SMTP mailboxes at daily cap for user %s. Stopping.", user_id)
                 break
@@ -611,6 +630,7 @@ def send_due(user_id: int) -> int:
                 sent_count += 1
                 if use_smtp:
                     smtp_sent_today[mb_name] = smtp_sent_today.get(mb_name, 0) + 1
+                    smtp_aggregate_today[mb_name] = smtp_aggregate_today.get(mb_name, 0) + 1
                 logger.info(
                     "Marked lead %s as %s (step %d) via %s",
                     lead["id"],
