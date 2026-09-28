@@ -709,6 +709,14 @@ def _classify_send_failure(exc: Exception) -> Optional[str]:
 
 
 def _should_check_inbox(user_id: int) -> bool:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM leads WHERE user_id = ? AND sent_at IS NOT NULL LIMIT 1", (user_id,))
+        if not cur.fetchone():
+            return False
+    finally:
+        conn.close()
     last = _get_state(_state_key(user_id, "last_inbox_check"))
     if not last:
         return True
