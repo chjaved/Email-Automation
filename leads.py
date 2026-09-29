@@ -125,6 +125,11 @@ def parse_socials(row: Dict[str, Any], mapping: Dict[str, str]) -> str:
     return json.dumps(socials, ensure_ascii=False)
 
 
+def extract_emails(value: str) -> str:
+    found = re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", value or "")
+    return " ".join(dict.fromkeys(email.lower() for email in found))
+
+
 def validate_email(email: str) -> bool:
     return bool(EMAIL_RE.match(email.strip()))
 
