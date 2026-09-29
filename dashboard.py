@@ -902,22 +902,28 @@ async def api_import_csv(file: UploadFile = File(...), user: dict = Depends(curr
     try:
         cur = conn.cursor()
         for row in rows:
-            company = (row.get("Company Name") or row.get("company_name") or row.get("Company") or "").strip()
+            company = (
+                row.get("Company Name") or row.get("Contractor Name")
+                or row.get("company_name") or row.get("Company") or ""
+            ).strip()
             industry = (
                 row.get("Industry") or row.get("industry")
                 or row.get("Category") or row.get("category")
-                or ""
+                or row.get("Grade") or ""
             ).strip() or "other"
             website = (
-                row.get("Website") or row.get("website") or row.get("Web") or ""
+                row.get("Website") or row.get("website") or row.get("Web")
+                or row.get("View URL") or ""
             ).strip() or None
             location = (
                 row.get("Partial Address") or row.get("Address") or row.get("address")
-                or row.get("Location") or row.get("location") or ""
+                or row.get("Location") or row.get("location")
+                or ", ".join(filter(None, ((row.get("District") or "").strip(), (row.get("State") or "").strip())))
+                or ""
             ).strip() or None
             phone = (
                 row.get("Contacts") or row.get("Phone") or row.get("phone")
-                or row.get("Contact Number") or ""
+                or row.get("Contact Number") or row.get("Phone No.") or ""
             ).strip()
             socials = json.dumps({"phone": phone}, ensure_ascii=False) if phone else None
 
