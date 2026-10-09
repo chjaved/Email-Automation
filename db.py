@@ -151,6 +151,7 @@ def _add_missing_columns_sqlite(conn) -> None:
         ],
         "smtp_mailboxes": [
             ("aggregate_daily_cap", "INTEGER", "1000"),
+            ("is_fallback", "INTEGER", "0"),
         ],
         "user_settings": [
             ("cc_enabled", "INTEGER", "1"),
@@ -203,6 +204,7 @@ def _add_missing_columns_postgres(conn) -> None:
         ],
         "smtp_mailboxes": [
             ("aggregate_daily_cap", "INTEGER", "1000"),
+            ("is_fallback", "INTEGER", "0"),
         ],
         "user_settings": [
             ("cc_enabled", "INTEGER", "1"),
@@ -351,6 +353,7 @@ CREATE TABLE IF NOT EXISTS smtp_mailboxes (
     daily_cap INTEGER DEFAULT 300,
     aggregate_daily_cap INTEGER DEFAULT 1000,
     active INTEGER DEFAULT 1,
+    is_fallback INTEGER DEFAULT 0,
     created_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
@@ -482,6 +485,7 @@ POSTGRES_SCHEMA_STATEMENTS = [
         daily_cap INTEGER DEFAULT 300,
         aggregate_daily_cap INTEGER DEFAULT 1000,
         active INTEGER DEFAULT 1,
+        is_fallback INTEGER DEFAULT 0,
         created_at TEXT
     )
     """,

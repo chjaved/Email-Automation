@@ -473,19 +473,61 @@ def _smtp_aggregate_sends_today(conn, smtp_user: str) -> int:
 
 
 def _pick_smtp_mailbox(
-    smtp_mbs: List[Dict[str, Any]], sent_today: Dict[str, int], aggregate_today: Dict[str, int]
+    smtp_mbs: List[Dict[str, Any]], sent_today: Dict[str, int], aggregate_today: Dict[str, int],
+    include_fallback: bool = False, exclude: Optional[set] = None,
 ) -> Optional[Dict[str, Any]]:
     """Choose a mailbox that is below both the employee allocation and the
-    aggregate cap shared by everyone authenticating through that mailbox."""
+    aggregate cap shared by everyone authenticating through that mailbox.
+    Failover-only mailboxes are skipped unless include_fallback is set."""
     under_cap = [
         m for m in smtp_mbs
-        if sent_today.get(m["smtp_user"], 0) < m.get("daily_cap", 300)
+        if (include_fallback or not m.get("is_fallback"))
+        and m["smtp_user"] not in (exclude or set())
+        and sent_today.get(m["smtp_user"], 0) < m.get("daily_cap", 300)
         and aggregate_today.get(m["smtp_user"], 0) < m.get("aggregate_daily_cap", 1000)
     ]
     if not under_cap:
         return None
-    under_cap.sort(key=lambda m: sent_today.get(m["smtp_user"], 0))
+    under_cap.sort(key=lambda m: (m.get("is_fallback", 0), sent_today.get(m["smtp_user"], 0)))
     return under_cap[0]
+
+
+def _smtp_send_with_failover(
+    lead, user_id: int, smtp_mbs: List[Dict[str, Any]],
+    sent_today: Dict[str, int], aggregate_today: Dict[str, int],
+    smtp_mb: Dict[str, Any],
+) -> tuple:
+    """Send via smtp_mb; on a mailbox-side failure (auth/quota/lock/connection —
+    anything not a recipient problem) retry through the user's other eligible
+    mailboxes, including failover-only rows, so campaigns never stall on a
+    dead mailbox. Returns (result, used_mb, recipient_reason)."""
+    tried: set = set()
+    mb: Optional[Dict[str, Any]] = smtp_mb
+    while mb is not None and mb["smtp_user"] not in tried:
+        tried.add(mb["smtp_user"])
+        try:
+            return _send_smtp_message(lead, user_id, mb), mb, None
+        except Exception as e:
+            reason = _classify_send_failure(e)
+            if reason:
+                return None, mb, reason
+            logger.warning(
+                "SMTP mailbox %s failed for user %s (%s); trying failover",
+                mb["smtp_user"], user_id, e,
+            )
+            # If the employee alias is not authorized on a failover mailbox
+            # (Gmail 'Send mail as'), retry once sending as the mailbox itself.
+            if mb.get("is_fallback") and mb.get("from_alias") != mb["smtp_user"]:
+                try:
+                    plain = dict(mb, from_alias=mb["smtp_user"])
+                    return _send_smtp_message(lead, user_id, plain), mb, None
+                except Exception:
+                    pass
+            mb = _pick_smtp_mailbox(
+                smtp_mbs, sent_today, aggregate_today,
+                include_fallback=True, exclude=tried,
+            )
+    return None, smtp_mb, None
 
 
 def send_due(user_id: int) -> int:
@@ -574,12 +616,33 @@ def send_due(user_id: int) -> int:
         in_reply_to = lead["gmail_message_id_header"] or ""
         thread_id = lead["gmail_thread_id"] or ""
 
-        try:
-            if use_smtp:
-                result = _send_smtp_message(lead, user_id, smtp_mb)
-            else:
+        result = None
+        recipient_reason = None
+        if use_smtp:
+            # Mailbox-side failures (auth, quota, locked mailbox) fail over to
+            # the user's other mailboxes — including failover-only rows — so a
+            # dead mailbox never stops the campaign. Recipient-side failures
+            # (invalid address) are not retried; they bounce below.
+            result, used_mb, recipient_reason = _smtp_send_with_failover(
+                lead, user_id, smtp_mbs, smtp_sent_today, smtp_aggregate_today,
+                smtp_mb,
+            )
+            if result and used_mb is not smtp_mb:
+                smtp_mb = used_mb
+                mb_name = smtp_mb["smtp_user"]
+                logger.warning(
+                    "Lead %s sent via failover mailbox %s", lead["id"], mb_name
+                )
+        else:
+            try:
                 result = _send_mailbox_message(lead, mailbox)
-            if result:
+            except Exception as e:
+                recipient_reason = _classify_send_failure(e)
+                if not recipient_reason:
+                    logger.exception("Send failed for lead %s", lead["id"])
+
+        if result:
+            try:
                 now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
                 next_step = step + 1
 
@@ -622,27 +685,33 @@ def send_due(user_id: int) -> int:
                     step,
                     mb_name,
                 )
-        except Exception as e:
-            reason = _classify_send_failure(e)
-            if reason:
-                try:
-                    now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
-                    set_lead_status(
-                        lead["id"],
-                        "bounced",
-                        bounce_reason=reason,
-                        sent_at=now,
-                        sent_from_mailbox=mb_name,
-                    )
-                    log_event(lead["id"], "bounced", reason, mailbox=mb_name)
-                    logger.warning(
-                        "Marked lead %s as bounced (invalid recipient): %s",
-                        lead["id"], reason,
-                    )
-                except Exception:
-                    logger.exception("Failed to mark lead %s bounced after send error", lead["id"])
-            else:
-                logger.exception("Send failed for lead %s", lead["id"])
+            except Exception:
+                logger.exception("Failed to record send for lead %s", lead["id"])
+        elif recipient_reason:
+            try:
+                now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
+                set_lead_status(
+                    lead["id"],
+                    "bounced",
+                    bounce_reason=recipient_reason,
+                    sent_at=now,
+                    sent_from_mailbox=mb_name,
+                )
+                log_event(lead["id"], "bounced", recipient_reason, mailbox=mb_name)
+                logger.warning(
+                    "Marked lead %s as bounced (invalid recipient): %s",
+                    lead["id"], recipient_reason,
+                )
+            except Exception:
+                logger.exception("Failed to mark lead %s bounced after send error", lead["id"])
+        elif use_smtp:
+            # All eligible mailboxes failed on the mailbox side — leave the lead
+            # scheduled so the next cycle retries it.
+            logger.warning(
+                "All SMTP mailboxes unavailable for user %s; lead %s will retry",
+                user_id, lead["id"],
+            )
+            continue
 
         # Per-mailbox cooldown: this mailbox won't be picked again until the
         # gap elapses. Other mailboxes remain available immediately, so total

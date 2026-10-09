@@ -166,6 +166,7 @@ def list_smtp_mailboxes(user_id: int) -> list:
                 "daily_cap": int(r["daily_cap"] or 300),
                 "aggregate_daily_cap": int(r["aggregate_daily_cap"] or 1000),
                 "active": bool(r["active"]),
+                "is_fallback": bool(r["is_fallback"]) if "is_fallback" in r.keys() else False,
             }
         )
     return out
