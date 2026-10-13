@@ -557,6 +557,13 @@ def send_due(user_id: int) -> int:
     cur = conn.cursor()
     sent_count = 0
 
+    # Addresses that already hard-bounced anywhere in the system are dead —
+    # mark them invalid up front instead of discovering the bounce again.
+    cur.execute(
+        "SELECT DISTINCT lower(split_part(email,' ',1)) AS e FROM leads WHERE status='bounced'"
+    )
+    dead_addrs = {r["e"] for r in cur.fetchall()}
+
     # Per-SMTP-mailbox sends today, seeded from the events log so a worker
     # restart mid-day doesn't reset the caps.
     smtp_sent_today: Dict[str, int] = {}
@@ -587,11 +594,14 @@ def send_due(user_id: int) -> int:
         # send entirely and marks the lead invalid if the address is
         # unreachable — this is what actually stops the bounce flood at source.
         primary_addr = _verify_primary_address(lead["email"] or "")
-        if primary_addr is None:
+        if primary_addr is None or primary_addr.lower() in dead_addrs:
+            reason = (
+                "Address failed pre-send verification" if primary_addr is None
+                else "Address already bounced previously"
+            )
             set_lead_status(lead["id"], "invalid")
-            log_event(lead["id"], "invalid", "Address failed pre-send verification")
-            logger.info("Skipping lead %s: pre-send verification failed (%s)",
-                        lead["id"], lead["email"])
+            log_event(lead["id"], "invalid", reason)
+            logger.info("Skipping lead %s: %s (%s)", lead["id"], reason, lead["email"])
             continue
 
         if not check_bounce_rate_safety(user_id):
@@ -706,11 +716,36 @@ def send_due(user_id: int) -> int:
                 logger.exception("Failed to mark lead %s bounced after send error", lead["id"])
         elif use_smtp:
             # All eligible mailboxes failed on the mailbox side — leave the lead
-            # scheduled so the next cycle retries it.
-            logger.warning(
-                "All SMTP mailboxes unavailable for user %s; lead %s will retry",
-                user_id, lead["id"],
-            )
+            # scheduled so the next cycle retries it, but give up after 3 such
+            # failures so a persistently-undeliverable lead can't loop forever.
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM events WHERE lead_id = ? AND event_type = 'send_failed'",
+                    (lead["id"],),
+                )
+                fails = cur.fetchone()["n"]
+                if fails >= 2:
+                    now = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
+                    set_lead_status(
+                        lead["id"], "bounced",
+                        bounce_reason="Repeated send failures across all mailboxes",
+                        sent_at=now, sent_from_mailbox=mb_name,
+                    )
+                    log_event(lead["id"], "bounced",
+                              "Repeated send failures across all mailboxes", mailbox=mb_name)
+                    logger.warning(
+                        "Marked lead %s as bounced after %d failed send cycles",
+                        lead["id"], fails + 1,
+                    )
+                else:
+                    log_event(lead["id"], "send_failed",
+                              "All SMTP mailboxes unavailable", mailbox=mb_name)
+                    logger.warning(
+                        "All SMTP mailboxes unavailable for user %s; lead %s will retry",
+                        user_id, lead["id"],
+                    )
+            except Exception:
+                logger.exception("Failed to record send failure for lead %s", lead["id"])
             continue
 
         # Per-mailbox cooldown: this mailbox won't be picked again until the
@@ -752,6 +787,25 @@ def _classify_send_failure(exc: Exception) -> Optional[str]:
 
     if isinstance(exc, InvalidRecipientError):
         return f"Invalid email address: {exc}"
+    # SMTP refused the recipient itself (mailbox not found, no such user,
+    # 550 5.1.x etc.) — permanent, must bounce instead of retry/failover.
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        refused = getattr(exc, "recipients", {}) or {}
+        detail = "; ".join(f"{a}: {e}" for a, e in refused.items()) or str(exc)
+        return f"Recipient refused by server: {detail[:250]}"
+    if isinstance(exc, smtplib.SMTPResponseException):
+        code = getattr(exc, "smtp_code", 0) or 0
+        text = str(exc)
+        low = text.lower()
+        if 550 <= code <= 553 or any(
+            p in low
+            for p in (
+                "does not exist", "no such user", "mailbox not found",
+                "unknown recipient", "invalid recipient", "user unknown",
+                "recipient rejected", "address rejected", "unrouteable",
+            )
+        ):
+            return f"Recipient rejected by server: {text[:250]}"
     if HttpError is not None and isinstance(exc, HttpError):
         status = getattr(getattr(exc, "resp", None), "status", None)
         text = str(exc)
