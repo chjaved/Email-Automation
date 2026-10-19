@@ -387,13 +387,14 @@ def _verify_primary_address(raw_email: str) -> Optional[str]:
         _local_part_is_plausible,
         TYPO_DOMAINS,
         _KNOWN_GOOD,
+        _get_blocked_domains,
     )
 
     primary = _primary_address(raw_email)
     if not primary:
         return None
     local, domain = primary.split("@", 1)
-    if domain in TYPO_DOMAINS:
+    if domain in TYPO_DOMAINS or domain in _get_blocked_domains():
         return None
     # Enforce real provider signup rules (e.g. gmail.com >= 6 chars local).
     # Catches junk like aa@gmail.com, aai@gmail.com, s82@gmail.com that pass
@@ -557,10 +558,11 @@ def send_due(user_id: int) -> int:
     cur = conn.cursor()
     sent_count = 0
 
-    # Addresses that already hard-bounced anywhere in the system are dead —
-    # mark them invalid up front instead of discovering the bounce again.
+    # Addresses that already hard-bounced or were marked invalid anywhere in
+    # the system are dead — skip them up front instead of rediscovering the
+    # failure and wasting verification/AI/SMTP resources.
     cur.execute(
-        "SELECT DISTINCT lower(split_part(email,' ',1)) AS e FROM leads WHERE status='bounced'"
+        "SELECT DISTINCT lower(split_part(email,' ',1)) AS e FROM leads WHERE status IN ('bounced','invalid')"
     )
     dead_addrs = {r["e"] for r in cur.fetchall()}
 

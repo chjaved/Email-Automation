@@ -13,11 +13,17 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
+import time
+from typing import Dict, List, Optional, Set, Tuple
 
 from db import get_conn
 
 logger = logging.getLogger(__name__)
+
+_EMPLOYEE_USER_IDS = (3, 5, 6, 7, 9, 11, 12, 13)
+_BOUNCE_BLOCKLIST: Optional[Set[str]] = None
+_BOUNCE_BLOCKLIST_AT = 0.0
+_BLOCKLIST_TTL_SECONDS = 300
 
 
 def _setup_logging() -> None:
@@ -26,6 +32,47 @@ def _setup_logging() -> None:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[logging.StreamHandler()],
     )
+
+
+def _get_blocked_domains() -> Set[str]:
+    """Maintain a live domain blocklist based on historical bounce/invalid
+    rates across employee campaigns. Domains with >15% failures and at least
+    5 attempts are suppressed automatically so the same dead domains don't
+    keep wasting SMTP/AI resources."""
+    global _BOUNCE_BLOCKLIST, _BOUNCE_BLOCKLIST_AT
+    now = time.time()
+    if _BOUNCE_BLOCKLIST is not None and (now - _BOUNCE_BLOCKLIST_AT) < _BLOCKLIST_TTL_SECONDS:
+        return _BOUNCE_BLOCKLIST
+
+    blocked: Set[str] = set(TYPO_DOMAINS)
+    try:
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            placeholders = ",".join(["?"] * len(_EMPLOYEE_USER_IDS))
+            cur.execute(
+                f"""SELECT split_part(email,'@',2) AS domain,
+                    SUM(CASE WHEN event_type IN ('sent','followup_1','followup_2') THEN 1 ELSE 0 END) AS sent,
+                    SUM(CASE WHEN event_type='bounced' THEN 1 ELSE 0 END) AS bounced,
+                    SUM(CASE WHEN event_type='invalid' THEN 1 ELSE 0 END) AS invalid
+                FROM events JOIN leads ON leads.id = events.lead_id
+                WHERE leads.user_id IN ({placeholders})
+                GROUP BY domain
+                HAVING SUM(CASE WHEN event_type IN ('sent','followup_1','followup_2','bounced','invalid') THEN 1 ELSE 0 END) >= 5""",
+                _EMPLOYEE_USER_IDS,
+            )
+            for row in cur.fetchall():
+                total = row["sent"] + row["bounced"] + row["invalid"]
+                if total > 0 and (row["bounced"] + row["invalid"]) / total > 0.15:
+                    blocked.add(row["domain"])
+        finally:
+            conn.close()
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Could not load dynamic bounce blocklist: %s", exc)
+
+    _BOUNCE_BLOCKLIST = blocked
+    _BOUNCE_BLOCKLIST_AT = now
+    return blocked
 
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
@@ -181,11 +228,12 @@ def verify_user_leads(
             continue
         by_domain.setdefault(domain, []).append(row["id"])
 
+    blocked = _get_blocked_domains()
     # Resolve MX for each unique domain in parallel.
     domain_ok: Dict[str, bool] = {}
-    unknown_domains = [d for d in by_domain if d not in _KNOWN_GOOD and d not in TYPO_DOMAINS]
+    unknown_domains = [d for d in by_domain if d not in _KNOWN_GOOD and d not in blocked]
     for d in by_domain:
-        if d in TYPO_DOMAINS:
+        if d in blocked:
             domain_ok[d] = False
         elif d in _KNOWN_GOOD:
             domain_ok[d] = True
