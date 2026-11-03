@@ -45,6 +45,12 @@ def cmd_preview(args: argparse.Namespace) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
+    import os
+    import time
+    if os.getenv("WORKER_ENABLED", "").strip().lower() not in ("1", "true", "yes"):
+        print("[worker] Paused: set WORKER_ENABLED=true to start sending. Idling.", flush=True)
+        while True:  # idle instead of exiting so the restart policy doesn't loop
+            time.sleep(3600)
     print("Starting campaign engine daemon. Press Ctrl+C to stop.")
     import os
     from db import USE_POSTGRES
