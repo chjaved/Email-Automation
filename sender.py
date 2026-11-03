@@ -29,7 +29,7 @@ from config import (
     SEND_INTERVAL_SECONDS,
     TIMEZONE,
 )
-from db import get_conn, log_event
+from db import USE_POSTGRES, get_conn, log_event
 from mailboxes import (
     get_next_mailbox,
     get_total_daily_cap,
@@ -771,17 +771,26 @@ def detect_bounces_gmail_api(user_id: int) -> int:
 
 
 def _all_user_ids() -> List[int]:
-    """Return every user that is registered or owns leads."""
+    """Return every user that is registered or owns leads, excluding disabled users.
+
+    Disabled status is looked up against the users table for every candidate
+    user_id (not just rows sourced from `users`), so a disabled user's leads
+    are skipped too, not just their own row.
+    """
     conn = get_conn()
     try:
         cur = conn.cursor()
+        not_disabled = "u.disabled IS NOT TRUE" if USE_POSTGRES else "(u.disabled IS NULL OR u.disabled = 0)"
         cur.execute(
-            """
-            SELECT DISTINCT user_id FROM (
+            f"""
+            SELECT DISTINCT t.user_id FROM (
                 SELECT id AS user_id FROM users
                 UNION
                 SELECT user_id FROM leads WHERE user_id IS NOT NULL
-            ) ORDER BY user_id
+            ) t
+            LEFT JOIN users u ON u.id = t.user_id
+            WHERE {not_disabled}
+            ORDER BY t.user_id
             """
         )
         return [row["user_id"] for row in cur.fetchall()]

@@ -45,6 +45,12 @@ def cmd_preview(args: argparse.Namespace) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
+    import os
+    import time
+    if os.getenv("WORKER_ENABLED", "").strip().lower() not in ("1", "true", "yes"):
+        print("[worker] Paused: set WORKER_ENABLED=true to start sending. Idling.", flush=True)
+        while True:  # idle instead of exiting so the restart policy doesn't loop
+            time.sleep(3600)
     print("Starting campaign engine daemon. Press Ctrl+C to stop.")
     import os
     from db import USE_POSTGRES
@@ -208,6 +214,45 @@ def cmd_remove_user(args: argparse.Namespace) -> None:
     print(f"Removed user {user_id} and all related data.")
 
 
+def cmd_disable_user(args: argparse.Namespace) -> None:
+    """Disable a user without deleting their data. The sender daemon skips
+    disabled users entirely (see sender._all_user_ids), so this pauses their
+    campaign while leaving everything intact and reversible."""
+    user_id = args.user_id
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET disabled = 1 WHERE id = ?", (user_id,))
+        updated = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if updated:
+        print(f"User {user_id} disabled. The sender daemon will skip them on the next cycle.")
+    else:
+        print(f"No user found with id {user_id}.", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_enable_user(args: argparse.Namespace) -> None:
+    """Re-enable a previously disabled user so the sender daemon resumes
+    processing their leads."""
+    user_id = args.user_id
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET disabled = 0 WHERE id = ?", (user_id,))
+        updated = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if updated:
+        print(f"User {user_id} enabled.")
+    else:
+        print(f"No user found with id {user_id}.", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_verify_emails(args: argparse.Namespace) -> None:
     """Bulk-verify recipient addresses (syntax + typo + MX) and mark bad ones
     as status='invalid' so the sender skips them."""
@@ -327,6 +372,17 @@ def main(argv: list = None) -> int:
     p_remove = sub.add_parser("remove-user", help="Delete a user and all associated data")
     p_remove.add_argument("--user-id", type=int, required=True, help="User ID to remove")
     p_remove.set_defaults(func=cmd_remove_user)
+
+    p_disable = sub.add_parser(
+        "disable-user",
+        help="Disable a user (without deleting data) so the sender daemon skips their campaign",
+    )
+    p_disable.add_argument("--user-id", type=int, required=True, help="User ID to disable")
+    p_disable.set_defaults(func=cmd_disable_user)
+
+    p_enable = sub.add_parser("enable-user", help="Re-enable a previously disabled user")
+    p_enable.add_argument("--user-id", type=int, required=True, help="User ID to enable")
+    p_enable.set_defaults(func=cmd_enable_user)
 
     p_test = sub.add_parser("test-send", help="Send a single test email using the current template")
     p_test.add_argument("email", help="Recipient email address")
